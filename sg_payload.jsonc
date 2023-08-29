@@ -1,0 +1,66 @@
+{
+  "tfstate": "location of state file",
+  "ResourceName": "Test", // workspace name
+  "wfgrpName": "Firstworkflow", // project name (if project ), user should provide
+  "Description": "test to send to Firas", // workspace description
+  "Tags": [], // workspace tags
+  "EnvironmentVariables": [], // variables of category env
+  "DeploymentPlatformConfig": [
+    {
+      // provided by user
+      "kind": "AZURE_STATIC",
+      "config": {
+        "integrationId": "/integrations/azure",
+        "profileName": "azure"
+      }
+    }
+  ],
+  "RunnerConstraints": {
+    "type": "shared"
+  },
+  "VCSConfig": {
+    "iacVCSConfig": {
+      "useMarketplaceTemplate": false,
+      "customSource": {
+        "sourceConfigDestKind": "GITLAB_COM", // user provided
+        "config": {
+          "includeSubModule": false,
+          "ref": "",
+          "isPrivate": true,
+          "auth": "/integrations/test-gitlab-akshat",
+          "workingDir": "",
+          "repo": "https://gitlab.com/arunim.chaudhary/terraform-azurerm-vnet"
+        }
+      }
+    },
+    "iacInputData": {
+      "schemaType": "RAW_JSON",
+      "data": {
+        "test": "ee"
+      }
+    }
+  },
+  "MiniSteps": {
+    "wfChaining": {
+      // user provided
+      "ERRORED": [],
+      "COMPLETED": []
+    },
+    "notifications": {
+      // user provided
+      "email": {
+        "ERRORED": [],
+        "COMPLETED": [],
+        "APPROVAL_REQUIRED": [],
+        "CANCELLED": []
+      }
+    }
+  },
+  "Approvers": [],
+  "TerraformConfig": {
+    "managedTerraformState": true,
+    "terraformVersion": "1.4.6"
+  },
+  "WfType": "TERRAFORM",
+  "UserSchedules": [] // user provided
+}
