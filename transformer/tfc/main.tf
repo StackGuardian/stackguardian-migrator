@@ -23,16 +23,20 @@ locals {
   workflow_ids   = [for i, v in data.tfe_workspace_ids.all.ids : v]
   workflow_names = [for i, v in data.tfe_workspace_ids.all.ids : i]
   workflows = [for i, v in data.tfe_workspace_ids.all.ids : {
+     CLIConfiguration = {
+      "WorkflowGroup": "../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate",
+      "TfStateFilePath": ""
+    }
     ResourceName              = data.tfe_workspace.all[i].name
     wfgrpName = ""
     Description = ""
     Tags            = data.tfe_workspace.all[i].tag_names
-    EnvironmentVariables = [for i, v in data.tfe_variables.all[v].variables : {
-      hcl       = v.hcl
-      name      = v.category == "terraform" ? "TF_VAR_${v.name}" : v.name
-      sensitive = v.sensitive
-      value     = v.value
-    }]
+    EnvironmentVariables = [for i, v in data.tfe_variables.all[v].variables : 
+        {"config": {
+            "textValue": v.value,
+            "varName":  v.name
+        },
+        "kind": "PLAIN_TEXT"} if v.category == "env"]
 
     DeploymentPlatformConfig = []
     RunnerConstraints = {"type": "shared"}
@@ -45,7 +49,7 @@ locals {
             "includeSubModule": false,
             "ref": length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : var.vcs_default_branch : var.vcs_default_branch,
             "isPrivate": true,
-            "auth": "/integrations/<integration-name>",
+            "auth": "/integrations/integration-name",
             "workingDir": "",
             "repo": length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
           }
@@ -53,7 +57,7 @@ locals {
       },
       "iacInputData": {
         "schemaType": "RAW_JSON",
-        "data": {}
+        "data" : {for i, v in data.tfe_variables.all[v].variables:  v.name => v.value if v.category == "terraform" }
       }
     }
     
