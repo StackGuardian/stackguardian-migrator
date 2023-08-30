@@ -1,13 +1,13 @@
 {
   "tfstate": "location of state file",
-  "ResourceName": "Test", // workspace name
-  "wfgrpName": "Firstworkflow", // project name (if project ), user should provide ( need example for project in payload)
-  "Description": "test to send to Firas", // workspace description
-  "Tags": [], // workspace tags
-  "EnvironmentVariables": [], // variables of category env
+  "ResourceName": "Test", 
+  "wfgrpName": "Firstworkflow", 
+  "Description": "test to send to Firas", 
+  "Tags": [], 
+  "EnvironmentVariables": [], 
   "DeploymentPlatformConfig": [
     {
-      // provided by user
+
       "kind": "AZURE_STATIC",
       "config": {
         "integrationId": "/integrations/azure",
@@ -22,7 +22,7 @@
     "iacVCSConfig": {
       "useMarketplaceTemplate": false,
       "customSource": {
-        "sourceConfigDestKind": "GITLAB_COM", // user provided
+        "sourceConfigDestKind": "GITLAB_COM", 
         "config": {
           "includeSubModule": false,
           "ref": "",
@@ -42,12 +42,10 @@
   },
   "MiniSteps": {
     "wfChaining": {
-      // user provided
       "ERRORED": [],
       "COMPLETED": []
     },
     "notifications": {
-      // user provided
       "email": {
         "ERRORED": [],
         "COMPLETED": [],
@@ -62,5 +60,5 @@
     "terraformVersion": "1.4.6"
   },
   "WfType": "TERRAFORM",
-  "UserSchedules": [] // user provided
+  "UserSchedules": [] 
 }
