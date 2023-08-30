@@ -23,33 +23,64 @@ locals {
   workflow_ids   = [for i, v in data.tfe_workspace_ids.all.ids : v]
   workflow_names = [for i, v in data.tfe_workspace_ids.all.ids : i]
   workflows = [for i, v in data.tfe_workspace_ids.all.ids : {
-    autodeploy = data.tfe_workspace.all[i].auto_apply
-    env_vars = [for i, v in data.tfe_variables.all[v].variables : {
+    ResourceName              = data.tfe_workspace.all[i].name
+    wfgrpName = ""
+    Description = ""
+    Tags            = data.tfe_workspace.all[i].tag_names
+    EnvironmentVariables = [for i, v in data.tfe_variables.all[v].variables : {
       hcl       = v.hcl
       name      = v.category == "terraform" ? "TF_VAR_${v.name}" : v.name
       sensitive = v.sensitive
       value     = v.value
     }]
-    labels            = data.tfe_workspace.all[i].tag_names
-    manage_state      = var.export_state
-    name              = data.tfe_workspace.all[i].name
-    terraform_version = data.tfe_workspace.all[i].terraform_version
-    vcs = {
-      # The "identifier" argument contains the acccount/organization and the respository names, separated by a slash
-      account = length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
 
-      # When the branch for the workflow is the repository's default branch, the value is empty so we use the value provided via the variable
-      branch = length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : var.vcs_default_branch : var.vcs_default_branch
-
-      namespace    = var.vcs_namespace
-      project_root = data.tfe_workspace.all[i].working_directory
-
-      # TFC/TFE does not return the VCS provider name so we use the value provided via the variable
-      provider = var.vcs_provider
-
-      # The "identifier" argument contains the acccount/organization and the respository names, separated by a slash
-      repository = length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
+    DeploymentPlatformConfig = []
+    RunnerConstraints = {"type": "shared"}
+    VCSConfig = {
+      "iacVCSConfig": {
+        "useMarketplaceTemplate": false,
+        "customSource": {
+          "sourceConfigDestKind": "", 
+          "config": {
+            "includeSubModule": false,
+            "ref": length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : var.vcs_default_branch : var.vcs_default_branch,
+            "isPrivate": true,
+            "auth": "/integrations/<integration-name>",
+            "workingDir": "",
+            "repo": length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
+          }
+        }
+      },
+      "iacInputData": {
+        "schemaType": "RAW_JSON",
+        "data": {}
+      }
     }
+    
+    MiniSteps = {
+      "wfChaining": {
+        "ERRORED": [],
+        "COMPLETED": []
+      },
+      "notifications": {
+        "email": {
+          "ERRORED": [],
+          "COMPLETED": [],
+          "APPROVAL_REQUIRED": [],
+          "CANCELLED": []
+        }
+      }
+    }
+    
+    Approvers = []
+    
+    TerraformConfig = {
+    "managedTerraformState": var.export_state,
+    "terraformVersion": data.tfe_workspace.all[i].terraform_version
+    }
+
+    WfType = ""
+    UserSchedules = [] 
   }]
   data = jsonencode({
     "workflows" : local.workflows
