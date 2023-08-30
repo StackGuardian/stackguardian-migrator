@@ -62,7 +62,8 @@ def create_new_json(input_file1, input_file2):
         print("Error decoding JSON data from the input file.")
 
 # Provide the paths of the input JSON files and the output JSON file
-input_json_file1 = 'example.json'
+input_json_file1 = input("Enter the location the state file from Terraform cloud: ")
+print(input_json_file1)
 input_json_file2 = 'sg_payload.json'
 
 
