@@ -18,6 +18,9 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
   - terraform login to ensure that Terraform can interact with your Terraform Cloud/Enterprise account.
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
 
+### Perform terraform login
+`terraform login`
+
 ### Export the resource definitions and Terraform state
 
 - Choose the transformer and locate the example of `terraform.tfvars`.
