@@ -86,9 +86,9 @@ locals {
     WfType = ""
     UserSchedules = [] 
   }]
-  data = jsonencode({
-    "workflows" : local.workflows
-  })
+  data = jsonencode(
+     local.workflows
+    )
 }
 
 data "tfe_workspace_ids" "all" {
