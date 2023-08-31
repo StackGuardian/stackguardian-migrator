@@ -24,8 +24,8 @@ locals {
   workflow_names = [for i, v in data.tfe_workspace_ids.all.ids : i]
   workflows = [for i, v in data.tfe_workspace_ids.all.ids : {
      CLIConfiguration = {
-      "WorkflowGroup": "../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate",
-      "TfStateFilePath": ""
+      "WorkflowGroup": "",
+      "TfStateFilePath": "${abspath(path.root)}../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate"
     }
     ResourceName              = data.tfe_workspace.all[i].name
     wfgrpName = ""
