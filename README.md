@@ -36,7 +36,7 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
 - `DeploymentPlatformConfig` - (Used to authenticate against a cloud provider using a StackGuardian Integration)
 - `VCSConfig` - Provide full path to the repo like as well the relevant sourceConfigDestKind from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
 
-### Bulk import
+### Bulk import workflows to StackGuardian Platform
 
 - Fetch sg-cli (https://github.com/StackGuardian/sg-cli.git) and set up sg-cli locally (documentation present in repo)
 - Run the following commands and pass the `sg-payload.json` as payload (represented below)
