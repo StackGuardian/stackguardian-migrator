@@ -34,7 +34,7 @@ A new `out` folder should have been created. The `sg-payload.json` file contains
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
 - `DeploymentPlatformConfig` - (Used to authenticate against a cloud provider using a StackGuardian Integration), Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
-- `VCSConfig` - Provide full path(https://gitlab.com/example) to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
+- `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
 
 ### Bulk import workflows to StackGuardian Platform
 
