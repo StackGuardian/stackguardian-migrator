@@ -25,7 +25,7 @@ locals {
   workflows = [for i, v in data.tfe_workspace_ids.all.ids : {
      CLIConfiguration = {
       "WorkflowGroup": "",
-      "TfStateFilePath": "${abspath(path.root)}../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate"
+      "TfStateFilePath": "${abspath(path.root)}/../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate"
     }
     ResourceName              = data.tfe_workspace.all[i].name
     wfgrpName = ""
@@ -36,7 +36,7 @@ locals {
             "textValue": v.value,
             "varName":  v.name
         },
-        "kind": "PLAIN_TEXT"} if v.category == "env"]
+        "kind": "PLAIN_TEXT"} if v.category == "env" && v.sensitive == false]
 
     DeploymentPlatformConfig = []
     RunnerConstraints = {"type": "shared"}
