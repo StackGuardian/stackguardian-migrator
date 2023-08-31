@@ -31,3 +31,15 @@ terraform apply -auto-approve -var-file=exporter.tfvars
 ```
 
 A new `out` folder should have been created. The `data.json` files contains the mapping of your resources equivalent to StackGuardian, and the `state-files` folder contains the files for the Terraform state of your workspace, if the state export was enabled.
+
+After completing the export , edit the `data.json` file for DeploymentPlatformConfig , VCSConfig , MiniSteps and UserSchedules. 
+
+### Bulk import 
+
+- Fetch sg-cli (https://github.com/StackGuardian/sg-cli.git) and set up sg-cli locally (documentation present in repo)
+- Run the following commands and pass the `data.json` as payload (represented below)
+
+```shell
+cd sg-cli/shell
+./sg-cli workflow create --bulk --org <org-id> --workflow-group <workflow-group> -- data.json
+```
