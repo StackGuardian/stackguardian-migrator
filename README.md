@@ -20,26 +20,32 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 ### Export the resource definitions and Terraform state
 
-- Choose the transformer and locate the example of `exporter.tfvars`.
-- Edit that file ( exporter.tfvars)  to match your context.
+- Choose the transformer and locate the example of `terraform.tfvars`.
+- Edit that file ( terraform.tfvars) to match your context.
 - Run the following commands:
 
 ```shell
-cd transformer/<tfc>
+cd transformer/tfc
 terraform init
-terraform apply -auto-approve -var-file=exporter.tfvars
+terraform apply -auto-approve -var-file=terraform.tfvars
 ```
 
-A new `out` folder should have been created. The `data.json` files contains the mapping of your resources equivalent to StackGuardian, and the `state-files` folder contains the files for the Terraform state of your workspace, if the state export was enabled.
+A new `out` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `state-files` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
 
-After completing the export , edit the `data.json` file for DeploymentPlatformConfig , VCSConfig , MiniSteps and UserSchedules. 
+After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
+- `DeploymentPlatformConfig` - (Used to authenticate against a cloud provider using a StackGuardian Integration)
+- `VCSConfig` - Provide full path to the repo like as well the relevant sourceConfigDestKind from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
 
-### Bulk import 
+### Bulk import
 
 - Fetch sg-cli (https://github.com/StackGuardian/sg-cli.git) and set up sg-cli locally (documentation present in repo)
-- Run the following commands and pass the `data.json` as payload (represented below)
+- Run the following commands and pass the `sg-payload.json` as payload (represented below)
 
 ```shell
-cd sg-cli/shell
-./sg-cli workflow create --bulk --org <org-id> --workflow-group <workflow-group> -- data.json
+cd ../../out
+
+Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<org-id>/settings?tab=api_key
+
+export SG_API_TOKEN=<YOUR_SG_API_TOKEN>
+wget -q "$(wget -qO- "https://api.github.com/repos/stackguardian/sg-cli/releases/latest" | jq -r '.tarball_url')" -O sg-cli.tar.gz && tar -xf sg-cli.tar.gz && rm -f sg-cli.tar.gz && /bin/cp -rf StackGuardian-sg-cli*/shell/sg-cli . && rm -rfd StackGuardian-sg-cli* && ./sg-cli workflow create --bulk --org "stackguardian" --workflow-group "test-tfc-exporter" -- sg-payload.json
 ```

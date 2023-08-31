@@ -23,79 +23,79 @@ locals {
   workflow_ids   = [for i, v in data.tfe_workspace_ids.all.ids : v]
   workflow_names = [for i, v in data.tfe_workspace_ids.all.ids : i]
   workflows = [for i, v in data.tfe_workspace_ids.all.ids : {
-     CLIConfiguration = {
-      "WorkflowGroup": "",
-      "TfStateFilePath": "${abspath(path.root)}/../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate"
+    CLIConfiguration = {
+      "WorkflowGroup" : "",
+      "TfStateFilePath" : "${abspath(path.root)}/../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate"
     }
-    ResourceName              = data.tfe_workspace.all[i].name
-    wfgrpName = ""
-    Description = ""
-    Tags            = data.tfe_workspace.all[i].tag_names
-    EnvironmentVariables = [for i, v in data.tfe_variables.all[v].variables : 
-        {"config": {
-            "textValue": v.value,
-            "varName":  v.name
+    ResourceName = data.tfe_workspace.all[i].name
+    wfgrpName    = ""
+    Description  = ""
+    Tags         = data.tfe_workspace.all[i].tag_names
+    EnvironmentVariables = [for i, v in data.tfe_variables.all[v].variables :
+      { "config" : {
+        "textValue" : v.value,
+        "varName" : v.name
         },
-        "kind": "PLAIN_TEXT"} if v.category == "env" && v.sensitive == false]
+    "kind" : "PLAIN_TEXT" } if v.category == "env" && v.sensitive == false]
 
     DeploymentPlatformConfig = []
-    RunnerConstraints = {"type": "shared"}
+    RunnerConstraints        = { "type" : "shared" }
     VCSConfig = {
-      "iacVCSConfig": {
-        "useMarketplaceTemplate": false,
-        "customSource": {
-          "sourceConfigDestKind": "", 
-          "config": {
-            "includeSubModule": false,
-            "ref": length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : var.vcs_default_branch : var.vcs_default_branch,
-            "isPrivate": true,
-            "auth": "/integrations/integration-name",
-            "workingDir": "",
-            "repo": length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
+      "iacVCSConfig" : {
+        "useMarketplaceTemplate" : false,
+        "customSource" : {
+          "sourceConfigDestKind" : "PLEASE PROVIDE A VALUE",
+          "config" : {
+            "includeSubModule" : false,
+            "ref" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : "" : "",
+            "isPrivate" : true,
+            "auth" : "PLEASE PROVIDE A VALUE",
+            "workingDir" : "",
+            "repo" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
           }
         }
       },
-      "iacInputData": {
-        "schemaType": "RAW_JSON",
-        "data" : {for i, v in data.tfe_variables.all[v].variables:  v.name => v.value if v.category == "terraform" }
+      "iacInputData" : {
+        "schemaType" : "RAW_JSON",
+        "data" : { for i, v in data.tfe_variables.all[v].variables : v.name => v.value if v.category == "terraform" }
       }
     }
-    
+
     MiniSteps = {
-      "wfChaining": {
-        "ERRORED": [],
-        "COMPLETED": []
+      "wfChaining" : {
+        "ERRORED" : [],
+        "COMPLETED" : []
       },
-      "notifications": {
-        "email": {
-          "ERRORED": [],
-          "COMPLETED": [],
-          "APPROVAL_REQUIRED": [],
-          "CANCELLED": []
+      "notifications" : {
+        "email" : {
+          "ERRORED" : [],
+          "COMPLETED" : [],
+          "APPROVAL_REQUIRED" : [],
+          "CANCELLED" : []
         }
       }
     }
-    
+
     Approvers = []
-    
+
     TerraformConfig = {
-    "managedTerraformState": var.export_state,
-    "terraformVersion": data.tfe_workspace.all[i].terraform_version
+      "managedTerraformState" : var.export_state,
+      "terraformVersion" : data.tfe_workspace.all[i].terraform_version
     }
 
-    WfType = ""
-    UserSchedules = [] 
+    WfType        = "TERRAFORM"
+    UserSchedules = []
   }]
   data = jsonencode(
-     local.workflows
-    )
+    local.workflows
+  )
 }
 
 data "tfe_workspace_ids" "all" {
-  exclude_tags = var.tfc_workspace_exclude_tags
   names        = var.tfc_workspace_names
   organization = var.tfc_organization
   tag_names    = var.tfc_workspace_include_tags
+  exclude_tags = var.tfc_workspace_exclude_tags
 }
 
 data "tfe_workspace" "all" {
@@ -113,7 +113,7 @@ data "tfe_variables" "all" {
 
 resource "local_file" "data" {
   content  = local.data
-  filename = "${path.module}/../../out/data.json"
+  filename = "${path.module}/../../out/sg-payload.json"
 }
 
 resource "local_file" "generate_temp_tf_files" {
