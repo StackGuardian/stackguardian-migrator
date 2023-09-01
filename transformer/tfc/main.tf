@@ -50,7 +50,7 @@ locals {
             "includeSubModule" : false,
             "ref" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : "" : "",
             "isPrivate" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? length(data.tfe_workspace.all[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.all[i].vcs_repo[0].github_app_installation_id) > 0 ? true : false : false,
-            "auth" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? length(data.tfe_workspace.all[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.all[i].vcs_repo[0].github_app_installation_id) > 0 ? "Provide an integration id like /integrations/aws-dev-accout or /secrets/my-git-token" : "" : "",
+            "auth" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? length(data.tfe_workspace.all[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.all[i].vcs_repo[0].github_app_installation_id) > 0 ? "Provide an integration id like /integrations/aws-dev-account or /secrets/my-git-token" : "" : "",
             "workingDir" : data.tfe_workspace.all[i].working_directory,
             "repo" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].identifier : ""
           }
