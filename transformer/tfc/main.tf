@@ -24,13 +24,12 @@ locals {
   workflow_names = [for i, v in data.tfe_workspace_ids.all.ids : i]
   workflows = [for i, v in data.tfe_workspace_ids.all.ids : {
     CLIConfiguration = {
-      "WorkflowGroup":{
-        "name": data.tfe_workspace.all[i].project_id
+      "WorkflowGroup" : {
+        "name" : data.tfe_workspace.all[i].project_id
       },
       "TfStateFilePath" : "${abspath(path.root)}/../../out/state-files/${data.tfe_workspace.all[i].name}.tfstate"
     }
     ResourceName = data.tfe_workspace.all[i].name
-    wfgrpName    = ""
     Description  = ""
     Tags         = data.tfe_workspace.all[i].tag_names
     EnvironmentVariables = [for i, v in data.tfe_variables.all[v].variables :
@@ -46,14 +45,14 @@ locals {
       "iacVCSConfig" : {
         "useMarketplaceTemplate" : false,
         "customSource" : {
-          "sourceConfigDestKind" : "PLEASE PROVIDE A VALUE",
+          "sourceConfigDestKind" : "Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS",
           "config" : {
             "includeSubModule" : false,
             "ref" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : "" : "",
-            "isPrivate" : true,
-            "auth" : "PLEASE PROVIDE A VALUE",
+            "isPrivate" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? length(data.tfe_workspace.all[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.all[i].vcs_repo[0].github_app_installation_id) > 0 ? true : false : false,
+            "auth" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? length(data.tfe_workspace.all[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.all[i].vcs_repo[0].github_app_installation_id) > 0 ? "Provide an integration id like /integrations/aws-dev-accout or /secrets/my-git-token" : "" : "",
             "workingDir" : data.tfe_workspace.all[i].working_directory,
-            "repo" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
+            "repo" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].identifier : ""
           }
         }
       },
@@ -78,11 +77,12 @@ locals {
       }
     }
 
-    Approvers = []
+    Approvers = data.tfe_workspace.all[i].auto_apply ? [] : ["Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true"]
 
     TerraformConfig = {
       "managedTerraformState" : var.export_state,
-      "terraformVersion" : data.tfe_workspace.all[i].terraform_version
+      "terraformVersion" : data.tfe_workspace.all[i].terraform_version,
+      "approvalPreApply" : !data.tfe_workspace.all[i].auto_apply
     }
 
     WfType        = "TERRAFORM"
