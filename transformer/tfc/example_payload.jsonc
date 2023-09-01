@@ -1,0 +1,60 @@
+{
+  "ResourceName": "", // workspace name
+  "wfgrpName": "", // workflow group name
+  "Description": "", // workflow description
+  "Tags": [], // workflow tags
+  "EnvironmentVariables": [], // variables of category env
+
+  "Approvers": [],
+  "CLIConfiguration": {
+    "TfStateFilePath": "", // path to the state file
+    "WorkflowGroup": {
+      "name": "" // workflowgroup name
+    }
+  },
+  "DeploymentPlatformConfig": [
+    {
+      "kind": "AWS_RBAC", //  value corresponds to  "AWS_STATIC", "GCP_STATIC" , "AWS_RBAC" OR "AZURE_STATIC"
+      "config": {
+        "integrationId": "/integrations/aws-rbac", // value corresponds to /integrations/<your-integration-from-stackguardian>
+        "profileName": "default" // // value corresponds to the profile if "AWS_RBAC"
+      }
+    }
+  ],
+  "MiniSteps": {
+    "notifications": {
+      "email": {
+        "APPROVAL_REQUIRED": [], // list of emails to notify
+        "CANCELLED": [], // list of emails to notify
+        "COMPLETED": [], // list of emails to notify
+        "ERRORED": [] // list of emails to notify
+      }
+    },
+    "wfChaining": { "COMPLETED": [], "ERRORED": [] }
+  },
+
+  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private"
+  "TerraformConfig": {
+    "managedTerraformState": true, // managed state from StackGuardian
+    "terraformVersion": "1.1.6" // version of terraform
+  },
+  "UserSchedules": [],
+  "VCSConfig": {
+    "iacInputData": { "data": {}, "schemaType": "RAW_JSON" }, // data key consists of key value pairs { "env1" : "secret} as terraform environment variables
+    "iacVCSConfig": {
+      "customSource": {
+        "config": {
+          "auth": "PLEASE PROVIDE A VALUE", // value corresponds to /secrets/<your-secret-from-stackguardian>  or /integrations/<your-integration-from-stackguardian>
+          "includeSubModule": false,
+          "isPrivate": true, // auth needs to be avaiable , if isPrivate is set to true
+          "ref": "",
+          "repo": "", // full https path to the repository
+          "workingDir": ""
+        },
+        "sourceConfigDestKind": "PLEASE PROVIDE A VALUE" // value corresponds to  "GITLAB_COM", "GITHUB_COM" , "BITBUCKET_ORG" OR "AZURE_DEVOPS"
+      },
+      "useMarketplaceTemplate": false
+    }
+  },
+  "WfType": "TERRAFORM" // could be "TERRAFORM" or "CUSTOM"
+}

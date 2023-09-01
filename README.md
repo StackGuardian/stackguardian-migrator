@@ -36,7 +36,7 @@ terraform apply -auto-approve -var-file=terraform.tfvars
 A new `out` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `state-files` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
-- `RunnerConstraints` - ...
+## Use the example.json file to refrence and edit the schema of the `sg-payload.json`
 - `DeploymentPlatformConfig` - (Used to authenticate against a cloud provider using a StackGuardian Integration), Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
 ```DeploymentPlatformConfig: {
       "kind": "AWS_RBAC",
@@ -46,9 +46,21 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
       }
     }```
 - `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
-    - `config.auth`
-    - `config.auth`
+    - `config.auth` 
     - `config.isPrivate`
+     
+- `ResourceName` // workspace name 
+- `wfgrpName` // this corresponds to the labelling of workflow group name in the StackGuardian platform
+- `Description` // description for the workflows created in the StackGuardian platform
+- `Tags` // list of tags for the workflows created in the StackGuardian platform 
+- `EnvironmentVariables` // environment variables for the workflows created in the StackGuardian platform
+- `RunnerConstraints` // Runner description for the workflows in the StackGuardian platform
+- `DeploymentPlatformConfig`
+- `Approvers` // Aprrovers for the workflow to run it successfully
+- `TerraformConfig` // Terraform configuration for the workflows created in the StackGuardian platform
+- `WfType` // this corresponds to the workflow type of  the workflow created in the StackGuardian platform
+- `UserSchedules` // Scheduled workflow run configuration for the workflow in the StackGuardian platform
+- `MiniSteps` // Ministeps for the workflow to direct the process if the workflow returns an error/success/approval required and workflow chaining .
 
 ### Bulk import workflows to StackGuardian Platform
 
