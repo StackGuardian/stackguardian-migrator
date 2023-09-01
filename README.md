@@ -44,7 +44,8 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
         "integrationId": "/integrations/aws-rbac",
         "profileName": "default"
       }
-    }```
+    }
+```
 - `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
     - `config.auth` 
     - `config.isPrivate`
