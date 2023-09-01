@@ -61,5 +61,12 @@ cd ../../out
 Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<org-id>/settings?tab=api_key
 
 export SG_API_TOKEN=<YOUR_SG_API_TOKEN>
-wget -q "$(wget -qO- "https://api.github.com/repos/stackguardian/sg-cli/releases/latest" | jq -r '.tarball_url')" -O sg-cli.tar.gz && tar -xf sg-cli.tar.gz && rm -f sg-cli.tar.gz && /bin/cp -rf StackGuardian-sg-cli*/shell/sg-cli . && rm -rfd StackGuardian-sg-cli* && ./sg-cli workflow create --bulk --org "stackguardian" -- sg-payload.json
+wget -q "$(wget -qO- "https://api.github.com/repos/stackguardian/sg-cli/releases/latest" | jq -r '.tarball_url')" -O sg-cli.tar.gz && tar -xf sg-cli.tar.gz && rm -f sg-cli.tar.gz && /bin/cp -rf StackGuardian-sg-cli*/shell/sg-cli . && rm -rfd StackGuardian-sg-cli*
+
+./sg-cli workflow create --bulk --org "<ORG NAME>" -- sg-payload.json
+```
+
+if you want to update a workflow with different details, please re-run the sg-cli command with the modified sg-payload.json and your workflow will be updated with the new details, as long as the ResourceName (Workflow name) remains the same.
+```shell
+./sg-cli workflow create --bulk --org "<ORG NAME>" -- sg-payload.json
 ```
