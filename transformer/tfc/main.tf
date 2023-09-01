@@ -52,7 +52,7 @@ locals {
             "ref" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? data.tfe_workspace.all[i].vcs_repo[0].branch != "" ? data.tfe_workspace.all[i].vcs_repo[0].branch : "" : "",
             "isPrivate" : true,
             "auth" : "PLEASE PROVIDE A VALUE",
-            "workingDir" : "",
+            "workingDir" : data.tfe_workspace.all[i].working_directory,
             "repo" : length(data.tfe_workspace.all[i].vcs_repo) > 0 ? split("/", data.tfe_workspace.all[i].vcs_repo[0].identifier)[1] : ""
           }
         }
