@@ -23,17 +23,17 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 ### Export the resource definitions and Terraform state
 
-- Choose the transformer and locate the example of `terraform.tfvars`.
+- Choose the transformer and locate the example of `terraform.tfvars.example` and rename it to `terraform.tfvars`.
 - Edit that file ( terraform.tfvars) to match your context.
 - Run the following commands:
 
 ```shell
-cd transformer/tfc
+cd transformer/exporter
 terraform init
 terraform apply -auto-approve -var-file=terraform.tfvars
 ```
 
-A new `out` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `state-files` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
+A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `states` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
 ###  Use the example_payload.jsonc file to refrence and edit the schema of the `sg-payload.json`
@@ -70,7 +70,7 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
 - Run the following commands and pass the `sg-payload.json` as payload (represented below)
 
 ```shell
-cd ../../out
+cd ../../export
 
 Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<org-id>/settings?tab=api_key
 
