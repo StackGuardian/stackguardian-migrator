@@ -1,27 +1,27 @@
-variable "export_state" {
+variable "stateExport" {
   default     = true
   description = "Export Terraform state to files?"
   type        = bool
 }
 
-variable "tfc_organization" {
+variable "tfOrg" {
   description = "TFC/TFE organization name"
   type        = string
 }
 
-variable "tfc_workspace_names" {
+variable "workspaceIds" {
   default     = ["*"]
   description = "List of TFC/TFE workspace names to export. Wildcards are supported (e.g., [\"*\"], [\"*-example\"], [\"example-*\"])."
   type        = list(string)
 }
 
-variable "tfc_workspace_exclude_tags" {
+variable "tfWorkspaceIgnoreTags" {
   default     = null
   description = "List of TFC/TFE workspace tags to exclude when exporting. Excluded tags take precedence over included ones. Wildcards are not supported."
   type        = list(string)
 }
 
-variable "tfc_workspace_include_tags" {
+variable "tfWorkspaceTags" {
   default     = null
   description = "List of TFC/TFE workspace tags to include when exporting. Excluded tags take precedence over included ones. Wildcards are not supported."
   type        = list(string)
