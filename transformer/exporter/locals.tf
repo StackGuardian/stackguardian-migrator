@@ -56,7 +56,7 @@ locals {
       }
     }
 
-    Approvers = data.tfe_workspace.ids[i].auto_apply == false ? [] : ["Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true"]
+    Approvers = data.tfe_workspace.ids[i].auto_apply == true ? [] : ["Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true"]
 
     TerraformConfig = {
       "managedTerraformState" : var.stateExport,
