@@ -17,8 +17,7 @@ resource "local_file" "generateTempTfFiles" {
 
 resource "null_resource" "exportStateFiles" {
   triggers = {
-     value = var.tfOrg,
-     export = var.exportPath
+     value = var.exportPath
   }
   depends_on = [local_file.generateTempTfFiles]
   for_each   = var.stateExport ? toset(local.workflowNames) : []
