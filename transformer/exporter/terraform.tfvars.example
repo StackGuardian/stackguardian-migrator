@@ -12,3 +12,6 @@ workspaceIds = ["*"]
 
 # Should Terraform state be exported to files?
 stateExport = true
+
+# Path Terraform state files to be exported to?
+# exportPath = "out"

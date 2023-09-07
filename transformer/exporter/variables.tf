@@ -26,3 +26,9 @@ variable "tfWorkspaceTags" {
   description = "List of TFC/TFE workspace tags to include when exporting. Excluded tags take precedence over included ones. Wildcards are not supported."
   type        = list(string)
 }
+
+variable "exportPath" {
+  default     = "export"
+  description = "name of the folder to export the payload, state files to . /export is the Default "
+  type        = string
+}
