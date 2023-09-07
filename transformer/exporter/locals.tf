@@ -6,7 +6,7 @@ locals {
       "WorkflowGroup" : {
         "name" : data.tfe_workspace.ids[i].project_id
       },
-      "TfStateFilePath" : "${abspath(path.root)}/../../${var.exportPath}/states/${data.tfe_workspace.ids[i].name}.tfstate"
+      "TfStateFilePath" : "${abspath(path.root)}/../../zip/${var.exportPath}/states/${data.tfe_workspace.ids[i].name}.tfstate"
     }
     ResourceName = data.tfe_workspace.ids[i].name
     Description  = ""
