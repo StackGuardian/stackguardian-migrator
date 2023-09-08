@@ -1,13 +1,11 @@
 resource "local_file" "data" {
   content  = local.data
-  filename = "${path.module}/../../${var.exportPath}/sg-payload.json"
+  filename = "${path.module}/../../${var.exportPath}/sg-payload-generated.json"
+  provisioner "local-exec" {
+    command = "mv ${path.module}/../../${var.exportPath}/sg-payload-generated.json ${path.module}/../../${var.exportPath}/sg-payload.json"
+  }
 }
-data "archive_file" "data" {
-  depends_on = [ local_file.data,local_file.generateTempTfFiles , null_resource.deleteTempTfFiles, null_resource.exportStateFiles ]
-  type        = "zip"
-  source_dir = "${path.module}/../../${var.exportPath}"
-  output_path = "${path.module}/../../zip/${var.exportPath}.zip"
-}
+
 resource "local_file" "generateTempTfFiles" {
   for_each = var.stateExport ? toset(local.workflowNames) : []
 
@@ -16,10 +14,10 @@ resource "local_file" "generateTempTfFiles" {
 }
 
 resource "null_resource" "exportStateFiles" {
-  triggers = {
-     value = var.exportPath
-  }
   depends_on = [local_file.generateTempTfFiles]
+  triggers = {
+    always-update =  timestamp()
+  }
   for_each   = var.stateExport ? toset(local.workflowNames) : []
 
   provisioner "local-exec" {
@@ -30,6 +28,9 @@ resource "null_resource" "exportStateFiles" {
 
 resource "null_resource" "deleteTempTfFiles" {
   count      = var.stateExport ? 1 : 0
+  triggers = {
+    always-update =  timestamp()
+  }
   depends_on = [null_resource.exportStateFiles]
 
   provisioner "local-exec" {
