@@ -1,9 +1,3 @@
-variable "stateExport" {
-  default     = true
-  description = "Export Terraform state to files?"
-  type        = bool
-}
-
 variable "tfOrg" {
   description = "TFC/TFE organization name"
   type        = string
@@ -15,10 +9,10 @@ variable "workspaceIds" {
   type        = list(string)
 }
 
-variable "tfWorkspaceIgnoreTags" {
-  default     = null
-  description = "List of TFC/TFE workspace tags to exclude when exporting. Excluded tags take precedence over included ones. Wildcards are not supported."
-  type        = list(string)
+variable "exportStateFiles" {
+  default     = true
+  description = "Also Export Terraform state to files?"
+  type        = bool
 }
 
 variable "tfWorkspaceTags" {
@@ -27,8 +21,14 @@ variable "tfWorkspaceTags" {
   type        = list(string)
 }
 
+variable "tfWorkspaceIgnoreTags" {
+  default     = null
+  description = "List of TFC/TFE workspace tags to exclude when exporting. Excluded tags take precedence over included ones. Wildcards are not supported."
+  type        = list(string)
+}
+
 variable "exportPath" {
   default     = "export"
-  description = "name of the folder to export the payload, state files to . /export is the Default "
+  description = "name of the folder to export the payload, state files to ./export is the Default "
   type        = string
 }

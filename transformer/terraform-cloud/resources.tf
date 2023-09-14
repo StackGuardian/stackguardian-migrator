@@ -7,7 +7,7 @@ resource "local_file" "data" {
 }
 
 resource "local_file" "generateTempTfFiles" {
-  for_each = var.stateExport ? toset(local.workflowNames) : []
+  for_each = var.exportStateFiles ? toset(local.workflowNames) : []
 
   content  = templatefile("${path.module}/workspace.tmpl", { tfOrg = var.tfOrg, workspace = each.key })
   filename = "${path.module}/../../${var.exportPath}/tfDir/${each.key}/main.tf"
@@ -18,7 +18,7 @@ resource "null_resource" "exportStateFiles" {
   triggers = {
     always-update =  timestamp()
   }
-  for_each   = var.stateExport ? toset(local.workflowNames) : []
+  for_each   = var.exportStateFiles ? toset(local.workflowNames) : []
 
   provisioner "local-exec" {
     command     = "mkdir -p ../../states && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup && terraform init -input=false && terraform state pull > ../../states/'${each.key}.tfstate'"
@@ -27,7 +27,7 @@ resource "null_resource" "exportStateFiles" {
 }
 
 resource "null_resource" "deleteTempTfFiles" {
-  count      = var.stateExport ? 1 : 0
+  count      = var.exportStateFiles ? 1 : 0
   triggers = {
     always-update =  timestamp()
   }

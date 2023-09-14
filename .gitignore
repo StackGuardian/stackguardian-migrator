@@ -159,6 +159,7 @@ override.tf.json
 terraform.rc
 
 export/*
+out/*
 zip
 zip/*
 
