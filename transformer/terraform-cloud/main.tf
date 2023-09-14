@@ -6,13 +6,13 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.4.0"
     }
+    tfe = {
+      source  = "hashicorp/tfe"
+      version = "~> 0.48.0"
+    }
     null = {
       source  = "hashicorp/null"
       version = "~> 3.2.1"
-    }
-    tfe = {
-      source  = "hashicorp/tfe"
-      version = "~> 0.45.0"
     }
   }
 }

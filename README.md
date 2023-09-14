@@ -14,21 +14,22 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 ## Prerequisites
 
+- An organization on [StackGuardian Platform](https://app.stackguardian.io)
+- Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform.
 - Terraform
-  - terraform login to ensure that Terraform can interact with your Terraform Cloud/Enterprise account.
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
 
 ### Perform terraform login
-`terraform login`
+Perform `terraform login` to ensure that your local Terraform can interact with your Terraform Cloud/Enterprise account.
 
 ### Export the resource definitions and Terraform state
 
 - Choose the transformer and locate the example of `terraform.tfvars.example` and rename it to `terraform.tfvars`.
-- Edit that file ( terraform.tfvars) to match your context.
+- Edit terraform.tfvars with appropriate variables.
 - Run the following commands:
 
 ```shell
-cd transformer/exporter
+cd transformer/terraform-cloud
 terraform init
 terraform apply -auto-approve -var-file=terraform.tfvars
 ```
@@ -36,8 +37,8 @@ terraform apply -auto-approve -var-file=terraform.tfvars
 A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `states` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
-###  Use the example_payload.jsonc file to refrence and edit the schema of the `sg-payload.json`
-- `DeploymentPlatformConfig` - (Used to authenticate against a cloud provider using a StackGuardian Integration), Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
+###  Use the example_payload.jsonc file as a reference and edit the schema of the `sg-payload.json`
+- `DeploymentPlatformConfig` - THis is used to authenticate against a cloud provider using a StackGuardian Integration. Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
 ```
   DeploymentPlatformConfig: {
       "kind": "AWS_RBAC",
@@ -47,32 +48,29 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
       }
     }
 ```
-- `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
+- `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS"
     - `config.auth` 
     - `config.isPrivate`
      
-- `ResourceName` // workspace name 
-- `wfgrpName` // this corresponds to the labelling of workflow group name in the StackGuardian platform
-- `Description` // description for the workflows created in the StackGuardian platform
-- `Tags` // list of tags for the workflows created in the StackGuardian platform 
-- `EnvironmentVariables` // environment variables for the workflows created in the StackGuardian platform
-- `RunnerConstraints` // Runner description for the workflows in the StackGuardian platform
-- `DeploymentPlatformConfig`
-- `Approvers` // Aprrovers for the workflow to run it successfully
-- `TerraformConfig` // Terraform configuration for the workflows created in the StackGuardian platform
-- `WfType` // this corresponds to the workflow type of  the workflow created in the StackGuardian platform
-- `UserSchedules` // Scheduled workflow run configuration for the workflow in the StackGuardian platform
-- `MiniSteps` // Ministeps for the workflow to direct the process if the workflow returns an error/success/approval required and workflow chaining .
+- `ResourceName` - name of your StackGuardian Workflow
+- `wfgrpName` - this corresponds to the labelling of workflow group name in the StackGuardian platform
+- `Description` - description for the workflows created in the StackGuardian platform
+- `Tags` - list of tags for the workflows created in the StackGuardian platform 
+- `EnvironmentVariables` - environment variables for the workflows created in the StackGuardian platform
+- `RunnerConstraints` - Runner description for the workflows in the StackGuardian platform
+- `Approvers` - Approvers for the workflow to run it successfully
+- `TerraformConfig` - Terraform configuration for the workflows created in the StackGuardian platform
+- `UserSchedules` - Scheduled workflow run configuration for the workflow in the StackGuardian platform
+- `MiniSteps` - Ministeps for the workflow to direct the process if the workflow returns an error/success/approval required and workflow chaining
 
 ### Bulk import workflows to StackGuardian Platform
 
-- Fetch sg-cli (https://github.com/StackGuardian/sg-cli.git) and set up sg-cli locally (documentation present in repo)
+- Fetch [sg-cli](https://github.com/StackGuardian/sg-cli.git) and set it up locally (documentation present in repo)
 - Run the following commands and pass the `sg-payload.json` as payload (represented below)
+- Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<ORG_ID>/settings?tab=api_key
 
 ```shell
 cd ../../export
-
-Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<org-id>/settings?tab=api_key
 
 export SG_API_TOKEN=<YOUR_SG_API_TOKEN>
 wget -q "$(wget -qO- "https://api.github.com/repos/stackguardian/sg-cli/releases/latest" | jq -r '.tarball_url')" -O sg-cli.tar.gz && tar -xf sg-cli.tar.gz && rm -f sg-cli.tar.gz && /bin/cp -rf StackGuardian-sg-cli*/shell/sg-cli . && rm -rfd StackGuardian-sg-cli*

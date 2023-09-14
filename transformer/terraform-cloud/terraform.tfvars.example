@@ -1,0 +1,17 @@
+# Terraform Cloud/Enterprise organization name
+tfOrg = "my-terraform-cloud-org"
+
+# List of workspace names to export. Use wildcards (e.g., ["*"]) for all workspaces
+workspaceIds = ["*"]
+
+# Export Terraform state
+exportStateFiles = true
+
+# Specify a list of tags in workspace tags to include, or leave empty to include all, for example: ["include"]
+# tfWorkspaceTags = []
+
+# Specify a list of tags in workspace tags to exclude, or leave empty to include all, for example: [exclude"]
+# tfWorkspaceIgnoreTags = []
+
+# Directory to export Terraform files to
+# exportPath = "export"
