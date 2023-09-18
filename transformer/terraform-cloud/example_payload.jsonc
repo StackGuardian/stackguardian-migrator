@@ -1,15 +1,9 @@
 {
-  "ResourceName": "", // workspace name
-  "wfgrpName": "", // workflow group name
-  "Description": "", // workflow description
-  "Tags": [], // workflow tags
-  "EnvironmentVariables": [], // variables of category env
-
   "Approvers": [],
   "CLIConfiguration": {
     "TfStateFilePath": "", // path to the state file
     "WorkflowGroup": {
-      "name": "" // workflowgroup name
+      "name": "" // workflowgroup name - will be created if it does not exist
     }
   },
   "DeploymentPlatformConfig": [
@@ -21,6 +15,8 @@
       }
     }
   ],
+  "Description": "", // workflow description
+  "EnvironmentVariables": [], // variables of category env
   "MiniSteps": {
     "notifications": {
       "email": {
@@ -32,8 +28,9 @@
     },
     "wfChaining": { "COMPLETED": [], "ERRORED": [] }
   },
-
-  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private"
+  "ResourceName": "", // workspace name
+  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}  
+  "Tags": [], // workflow tags
   "TerraformConfig": {
     "managedTerraformState": true, // managed state from StackGuardian
     "terraformVersion": "1.1.6" // version of terraform
@@ -44,11 +41,11 @@
     "iacVCSConfig": {
       "customSource": {
         "config": {
-          "auth": "PLEASE PROVIDE A VALUE", // value corresponds to /secrets/<your-secret-from-stackguardian>  or /integrations/<your-integration-from-stackguardian>
+          "auth": "PLEASE PROVIDE A VALUE", // value corresponds to /secrets/<your-secret-from-stackguardian>  or /integrations/<your-integration-from-stackguardian> i.e. /integrations/github_com
           "includeSubModule": false,
           "isPrivate": true, // auth needs to be avaiable , if isPrivate is set to true
           "ref": "",
-          "repo": "", // full https path to the repository
+          "repo": "", // full https path to the repository i.e. https://github.com/StackGuardian/terraform-aws-vpc
           "workingDir": ""
         },
         "sourceConfigDestKind": "PLEASE PROVIDE A VALUE" // value corresponds to  "GITLAB_COM", "GITHUB_COM" , "BITBUCKET_ORG" OR "AZURE_DEVOPS"
