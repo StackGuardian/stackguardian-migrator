@@ -39,13 +39,13 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
 ###  Use the example_payload.jsonc file to refrence and edit the schema of the `sg-payload.json`
 - `DeploymentPlatformConfig` - (Used to authenticate against a cloud provider using a StackGuardian Integration), Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
 ```
-  DeploymentPlatformConfig: {
+  DeploymentPlatformConfig: [
       "kind": "AWS_RBAC",
       "config": {
         "integrationId": "/integrations/aws-rbac",
         "profileName": "default"
       }
-    }
+  ]
 ```
 - `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS".
     - `config.auth` 
