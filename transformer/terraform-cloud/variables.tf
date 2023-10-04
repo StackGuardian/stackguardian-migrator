@@ -3,7 +3,7 @@ variable "tfOrg" {
   type        = string
 }
 
-variable "workspaceIds" {
+variable "workspacenames" {
   default     = ["*"]
   description = "List of TFC/TFE workspace names to export. Wildcards are supported (e.g., [\"*\"], [\"*-example\"], [\"example-*\"])."
   type        = list(string)
