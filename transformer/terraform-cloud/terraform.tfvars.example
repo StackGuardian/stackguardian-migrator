@@ -2,7 +2,7 @@
 tfOrg = "my-terraform-cloud-org"
 
 # List of workspace names to export. Use wildcards (e.g., ["*"]) for all workspaces
-workspaceIds = ["*"]
+workspacenames = ["*"]
 
 # Export Terraform state
 exportStateFiles = true

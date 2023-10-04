@@ -1,5 +1,5 @@
 data "tfe_workspace_ids" "data" {
-  names        = var.workspaceIds
+  names        = var.workspacenames
   organization = var.tfOrg
   tag_names    = var.tfWorkspaceTags
   exclude_tags = var.tfWorkspaceIgnoreTags
