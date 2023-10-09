@@ -60,6 +60,17 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
 - `Tags` - list of tags for the workflows created in the StackGuardian platform 
 - `EnvironmentVariables` - environment variables for the workflows created in the StackGuardian platform
 - `RunnerConstraints` - Runner description for the workflows in the StackGuardian platform
+    - Private runners - ``` 
+          "RunnerConstraints": {
+            "type": "private",
+            "names": [
+                "sg-runner"
+            ] 
+          }```
+    - Shared runners - ```json
+          "RunnerConstraints": {
+            "type": "shared",
+          }```
 - `Approvers` - Approvers for the workflow to run it successfully
 - `TerraformConfig` - Terraform configuration for the workflows created in the StackGuardian platform
 - `UserSchedules` - Scheduled workflow run configuration for the workflow in the StackGuardian platform

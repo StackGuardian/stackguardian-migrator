@@ -29,7 +29,7 @@
     "wfChaining": { "COMPLETED": [], "ERRORED": [] }
   },
   "ResourceName": "", // workspace name
-  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}  
+  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}
   "Tags": [], // workflow tags
   "TerraformConfig": {
     "managedTerraformState": true, // managed state from StackGuardian
