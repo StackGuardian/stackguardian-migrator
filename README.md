@@ -69,7 +69,7 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
           }```
     - Shared runners - ```json
           "RunnerConstraints": {
-            "type": "shared",
+            "type": "shared"
           }```
 - `Approvers` - Approvers for the workflow to run it successfully
 - `TerraformConfig` - Terraform configuration for the workflows created in the StackGuardian platform
