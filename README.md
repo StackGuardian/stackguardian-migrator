@@ -67,7 +67,7 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
                 "sg-runner"
             ] 
           }```
-    - Shared runners - ```json
+    - Shared runners - ```
           "RunnerConstraints": {
             "type": "shared"
           }```
