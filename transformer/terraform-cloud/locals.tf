@@ -37,7 +37,7 @@ locals {
       },
       "iacInputData" : {
         "schemaType" : "RAW_JSON",
-        "data" : { for i, v in data.tfe_variables.data[v].variables : v.name => v.value if v.category == "terraform" }
+        "data" : { for i, v in data.tfe_variables.data[v].variables : v.name => try(jsondecode(v.value), v.value) if v.category == "terraform" }
       }
     }
 
