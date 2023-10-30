@@ -8,10 +8,33 @@ workspacenames = ["*"]
 exportStateFiles = true
 
 # Specify a list of tags in workspace tags to include, or leave empty to include all, for example: ["include"]
-# tfWorkspaceTags = []
+tfWorkspaceTags = null
 
 # Specify a list of tags in workspace tags to exclude, or leave empty to include all, for example: [exclude"]
-# tfWorkspaceIgnoreTags = []
+tfWorkspaceIgnoreTags = null
 
 # Directory to export Terraform files to
-# exportPath = "export"
+exportPath = "export"
+
+# Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true
+SGDefaultWfApprovers = []
+
+# Prefix for your repo URL
+SGDefaultIACVCSRepoPrefix = "https://www.github.com"
+
+# Provide an integration id like /integrations/aws-dev-account or /secrets/my-git-token
+SGDefaultVCSAuthIntegrationID = "/integrations/github_com"
+
+# Integration to use to authenticate against your cloud provider
+SGDefaultDeploymentPlatformConfig = [
+    {
+      "kind" : "AWS_RBAC",
+      "config" : {
+        "integrationId" : "/integrations/aws-dev-account",
+        "profileName" : "default"
+      }
+    }
+  ]
+
+# Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
+SGDefaultSourceConfigDestKind = "GITHUB_COM"

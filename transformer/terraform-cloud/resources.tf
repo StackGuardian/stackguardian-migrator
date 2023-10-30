@@ -16,9 +16,9 @@ resource "local_file" "generateTempTfFiles" {
 resource "null_resource" "exportStateFiles" {
   depends_on = [local_file.generateTempTfFiles]
   triggers = {
-    always-update =  timestamp()
+    always-update = timestamp()
   }
-  for_each   = var.exportStateFiles ? toset(local.workflowNames) : []
+  for_each = var.exportStateFiles ? toset(local.workflowNames) : []
 
   provisioner "local-exec" {
     command     = "mkdir -p ../../states && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup && terraform init -input=false && terraform state pull > ../../states/'${each.key}.tfstate'"
@@ -27,9 +27,9 @@ resource "null_resource" "exportStateFiles" {
 }
 
 resource "null_resource" "deleteTempTfFiles" {
-  count      = var.exportStateFiles ? 1 : 0
+  count = var.exportStateFiles ? 1 : 0
   triggers = {
-    always-update =  timestamp()
+    always-update = timestamp()
   }
   depends_on = [null_resource.exportStateFiles]
 

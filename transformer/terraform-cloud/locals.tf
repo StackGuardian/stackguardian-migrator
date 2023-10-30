@@ -18,20 +18,20 @@ locals {
         },
     "kind" : "PLAIN_TEXT" } if v.category == "env" && v.sensitive == false]
 
-    DeploymentPlatformConfig = []
+    DeploymentPlatformConfig = var.SGDefaultDeploymentPlatformConfig
     RunnerConstraints        = { "type" : "shared" }
     VCSConfig = {
       "iacVCSConfig" : {
         "useMarketplaceTemplate" : false,
         "customSource" : {
-          "sourceConfigDestKind" : "Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS",
+          "sourceConfigDestKind" : var.SGDefaultSourceConfigDestKind
           "config" : {
             "includeSubModule" : false,
             "ref" : length(data.tfe_workspace.data[i].vcs_repo) > 0 ? data.tfe_workspace.data[i].vcs_repo[0].branch != "" ? data.tfe_workspace.data[i].vcs_repo[0].branch : "" : "",
             "isPrivate" : length(data.tfe_workspace.data[i].vcs_repo) > 0 ? length(data.tfe_workspace.data[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.data[i].vcs_repo[0].github_app_installation_id) > 0 ? true : false : false,
-            "auth" : length(data.tfe_workspace.data[i].vcs_repo) > 0 ? length(data.tfe_workspace.data[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.data[i].vcs_repo[0].github_app_installation_id) > 0 ? "Provide an integration id like /integrations/aws-dev-account or /secrets/my-git-token" : "" : "",
+            "auth" : length(data.tfe_workspace.data[i].vcs_repo) > 0 ? length(data.tfe_workspace.data[i].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.data[i].vcs_repo[0].github_app_installation_id) > 0 ? var.SGDefaultVCSAuthIntegrationID : "" : "",
             "workingDir" : data.tfe_workspace.data[i].working_directory,
-            "repo" : length(data.tfe_workspace.data[i].vcs_repo) > 0 ? data.tfe_workspace.data[i].vcs_repo[0].identifier : ""
+            "repo" : length(data.tfe_workspace.data[i].vcs_repo) > 0 ? format("%s/%s", var.SGDefaultIACVCSRepoPrefix, data.tfe_workspace.data[i].vcs_repo[0].identifier) : ""
           }
         }
       },
@@ -56,7 +56,7 @@ locals {
       }
     }
 
-    Approvers = data.tfe_workspace.data[i].auto_apply == true ? [] : ["Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true"]
+    Approvers = data.tfe_workspace.data[i].auto_apply == true ? [] : var.SGDefaultWfApprovers
 
     TerraformConfig = {
       "managedTerraformState" : true,

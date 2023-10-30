@@ -38,7 +38,7 @@ A new `export` folder should have been created. The `sg-payload.json` file conta
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
 ###  Use the example_payload.jsonc file as a reference and edit the schema of the `sg-payload.json`
-- `DeploymentPlatformConfig` - THis is used to authenticate against a cloud provider using a StackGuardian Integration. Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
+- `DeploymentPlatformConfig` - This is used to authenticate against a cloud provider using a StackGuardian Integration. Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
 ```
   DeploymentPlatformConfig: [
     {
