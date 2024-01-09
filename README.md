@@ -5,7 +5,7 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 ## Supported platforms for migration
 
 - [Terraform Cloud](../cloudformation/transformer/terraform-cloud/README.md)
-- [Cloudformation stacks](../cloudformation/transformer/cloudformation/README.md)
+- [Cloudformation Stacks](../cloudformation/transformer/cloudformation/README.md)
 
 ## Overview
 
