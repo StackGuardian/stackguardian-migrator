@@ -4,8 +4,8 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 ## Supported platforms for migration
 
-- Terraform Cloud [link](../cloudformation/transformer/terraform-cloud/README.md)
-- Cloudformation stacks[link](../cloudformation/transformer/cloudformation/README.md)
+- [Terraform Cloud](../cloudformation/transformer/terraform-cloud/README.md)
+- [Cloudformation stacks](../cloudformation/transformer/cloudformation/README.md)
 
 ## Overview
 
@@ -25,7 +25,7 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 - Choose the transformer and locate the example of `terraform.tfvars.example` and rename it to `terraform.tfvars`.
 - Edit terraform.tfvars with appropriate variables.
-- Run the commands mentioned in the README.md file in the transformer.
+- Run the commands mentioned in the README.md for the transformers.
 
 A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for the resources under the chosen transformer.
 
