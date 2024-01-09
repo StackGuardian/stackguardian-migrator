@@ -1,0 +1,31 @@
+# Directory to export Terraform files to
+exportPath = "export"
+
+# S3 path to uplaoad cloudformation templates
+s3_path = ""
+
+# Default aws region
+default_region= ""
+
+# Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true
+SGDefaultWfApprovers = []
+
+# Prefix for your repo URL
+SGDefaultIACVCSRepoPrefix = "https://www.github.com"
+
+# Provide an integration id like /integrations/aws-dev-account or /secrets/my-git-token
+SGDefaultVCSAuthIntegrationID = "/integrations/github_com"
+
+# Integration to use to authenticate against your cloud provider
+SGDefaultDeploymentPlatformConfig = [
+    {
+      "kind" : "AWS_RBAC",
+      "config" : {
+        "integrationId" : "/integrations/aws-dev-account",
+        "profileName" : "default"
+      }
+    }
+  ]
+
+# Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
+SGDefaultSourceConfigDestKind = "GITHUB_COM"
