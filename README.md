@@ -13,12 +13,13 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 - Review the bulk workflow creation payload.
 - Run sg-cli with the bulk workflow creation payload.
 
-## Prerequisites
+## Common Prerequisites
 
 - An organization on [StackGuardian Platform](https://app.stackguardian.io)
 - Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform.
 - Terraform
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
+- Other prerequisites mentioned in the README.md for the transformers
 
 
 ### Export the resource definitions and Terraform state
