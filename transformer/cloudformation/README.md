@@ -2,7 +2,7 @@
 
 Migrate workloads from other platforms to [StackGuardian Platform](https://app.stackguardian.io).
 
-## platform for migration
+## Platform for migration
 
 - Cloudformation Stacks
 
