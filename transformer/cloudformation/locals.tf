@@ -1,5 +1,5 @@
 locals {
-  stack_names = jsondecode(file("stack_names.json"))
+  stack_names = jsondecode(file("_stack_names.json"))
 }
 locals {
   workflows = [
@@ -9,48 +9,48 @@ locals {
           name = stack_name
         }
       }
-      ResourceName          = stack_name
-      Description           = stack_data.description
-      Tags                  = stack_data.tags
+      ResourceName = stack_name
+      Description  = stack_data.description
+      Tags         = stack_data.tags
       EnvironmentVariables = [
         {
-          "config": {
-            "textValue": "eu-west-1",
-            "varName": "AWS_REGION"
+          "config" : {
+            "textValue" : "eu-west-1",
+            "varName" : "AWS_REGION"
           },
-          "kind": "PLAIN_TEXT"
+          "kind" : "PLAIN_TEXT"
         }
       ]
-      VCSConfig               = {}
-      TerraformConfig         = {}
+      VCSConfig                = {}
+      TerraformConfig          = {}
       DeploymentPlatformConfig = var.SGDefaultDeploymentPlatformConfig
       WfStepsConfig = [
         {
-          name         = "CreateChangeset"
-          mountPoints  = []
+          name             = "CreateChangeset"
+          mountPoints      = []
           wfStepTemplateId = "/demo-org/cloudformation:51"
           wfStepInputData = {
             schemaType = "FORM_JSONSCHEMA"
             data = {
-              cfCapabilities   = stack_data.capabilities
-              cfStackName       = stack_name
-              cfS3TemplateURL  = "${var.s3_path}/${stack_name}.yaml"
-              cfAction          = "create-changeset"
+              cfCapabilities  = stack_data.capabilities
+              cfStackName     = stack_name
+              cfS3TemplateURL = "${var.s3_path}/${stack_name}.yaml"
+              cfAction        = "create-changeset"
             }
           }
           approval = false
         },
         {
-          name         = "ApplyChangeset"
-          mountPoints  = []
+          name             = "ApplyChangeset"
+          mountPoints      = []
           wfStepTemplateId = "/demo-org/cloudformation:51"
           wfStepInputData = {
             schemaType = "FORM_JSONSCHEMA"
             data = {
-              cfStackName        = stack_name
+              cfStackName          = stack_name
               RetainExceptOnCreate = false
-              cfAction           = "apply-changeset"
-              DisableRollback    = stack_data.disable_rollback
+              cfAction             = "apply-changeset"
+              DisableRollback      = stack_data.disable_rollback
             }
           }
           approval = true

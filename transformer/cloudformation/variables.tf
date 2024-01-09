@@ -5,11 +5,11 @@ variable "exportPath" {
 }
 variable "s3_path" {
   description = "Base path for CloudFormation templates in S3"
-  default     = "stackguardian/cloudformation_templates"  # Adjust to your desired base path
+  default     = "stackguardian/cloudformation_templates" # Adjust to your desired base path
 }
 variable "default_region" {
   description = "default aws region"
-  default     = "eu-central-1"  # Adjust to your desired base path
+  default     = "eu-central-1" # Change to your desired AWS region, where Cloudformation stacks are maintained.
 }
 variable "s3Bucket" {
   default     = ""

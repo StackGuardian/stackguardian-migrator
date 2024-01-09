@@ -17,6 +17,8 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 - An organization on [StackGuardian Platform](https://app.stackguardian.io)
 - Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform.
 - Terraform
+- AWS CLI configured locally.
+- AWS account with adequate access where CloudFormation stacks are maintained.
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
 
 
@@ -32,6 +34,9 @@ terraform init
 terraform apply -target=null_resource.get_stack_names
 terraform apply -auto-approve -var-file=terraform.tfvars
 ```
+terraform apply -target=null_resource.get_stack_names , runs an aws cli to list all the stack names in the AWS acount to create _stacks_names.json file existing in the given region during its execution.
+
+terraform apply -auto-approve -var-file=terraform.tfvars this command , creates a data source with all the stack names retrieved during the previous command to create a sg-payload.json.
 
 A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each stack in the given region.
 
