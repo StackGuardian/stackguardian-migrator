@@ -2,14 +2,13 @@
 
 Migrate workloads from other platforms to [StackGuardian Platform](https://app.stackguardian.io).
 
-## Supported platforms for migration
+## platform for migration
 
-- Terraform Cloud
-- Cloudformation stacks
+- Cloudformation Stacks
 
 ## Overview
 
-- Extract and transform the workloads from the target platform to StackGuardian Workflows.
+- Extract and transform the stacks from AWS cloudformation to StackGuardian Workflows.
 - Review the bulk workflow creation payload.
 - Run sg-cli with the bulk workflow creation payload.
 
@@ -25,9 +24,16 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 - Choose the transformer and locate the example of `terraform.tfvars.example` and rename it to `terraform.tfvars`.
 - Edit terraform.tfvars with appropriate variables.
-- Run the following commands mentioned in the README.md file in the transformer.
+- Run the following commands:
 
-A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for the resources under the chosen transformer.
+```shell
+cd transformer/terraform-cloud
+terraform init
+terraform apply -target=null_resource.get_stack_names
+terraform apply -auto-approve -var-file=terraform.tfvars
+```
+
+A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each stack in the given region.
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
 ###  Use the example_payload.jsonc file as a reference and edit the schema of the `sg-payload.json`
