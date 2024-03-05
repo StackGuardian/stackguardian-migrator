@@ -2,10 +2,9 @@
 
 Migrate workloads from other platforms to [StackGuardian Platform](https://app.stackguardian.io).
 
-## Supported platforms for migration
+## Platform for migration
 
-- [Terraform Cloud](../cloudformation/transformer/terraform-cloud/README.md)
-- [Cloudformation Stacks](../cloudformation/transformer/cloudformation/README.md)
+- Terraform Cloud
 
 ## Overview
 
@@ -13,22 +12,29 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 - Review the bulk workflow creation payload.
 - Run sg-cli with the bulk workflow creation payload.
 
-## Common Prerequisites
+## Prerequisites
 
 - An organization on [StackGuardian Platform](https://app.stackguardian.io)
 - Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform.
 - Terraform
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
-- Other prerequisites mentioned in the README.md for the transformers
 
+### Perform terraform login
+Perform `terraform login` to ensure that your local Terraform can interact with your Terraform Cloud/Enterprise account.
 
 ### Export the resource definitions and Terraform state
 
 - Choose the transformer and locate the example of `terraform.tfvars.example` and rename it to `terraform.tfvars`.
 - Edit terraform.tfvars with appropriate variables.
-- Run the commands mentioned in the README.md for the transformers.
+- Run the following commands:
 
-A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for the resources under the chosen transformer.
+```shell
+cd transformer/terraform-cloud
+terraform init
+terraform apply -auto-approve -var-file=terraform.tfvars
+```
+
+A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `states` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
 ###  Use the example_payload.jsonc file as a reference and edit the schema of the `sg-payload.json`
