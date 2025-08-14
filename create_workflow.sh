@@ -14,7 +14,7 @@ install_jq(){
     ARCH=$(uname -m)
 
     JQ_BIN="/tmp/jq"
-    url="https://github.com/jqlang/jq/releases/latest/download/jq-${OS}-${ARCH}"
+    url="https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-${OS}-${ARCH}"
     curl -L -o $JQ_BIN $url
     chmod +x $JQ_BIN
 
@@ -33,9 +33,9 @@ install_hcl2json(){
 
     ARCH=$(uname -m)
 
-    HCL2JSON_BIN="./hcl2json"
+    HCL2JSON_BIN="/tmp/hcl2json"
 
-    url="https://github.com/tmccombs/hcl2json/releases/latest/download/hcl2json_${OS}_${ARCH}"
+    url="https://github.com/tmccombs/hcl2json/releases/download/v0.6.7/hcl2json_${OS}_${ARCH}"
     echo $url
     curl -L -o $HCL2JSON_BIN $url
     chmod +x $HCL2JSON_BIN
@@ -48,15 +48,8 @@ if [ -z "$INPUT_FILE_JSON" ]; then
     exit 1
 fi
 
-JQ_BIN=$(which jq)
-if [ $? -ne 0 ]; then
-    install_jq
-fi
-
-HCL2JSON_BIN=$(which hcl2json)
-if [ $? -ne 0 ]; then
-    install_hcl2json
-fi
+install_jq
+install_hcl2json
 
 # Read entire JSON array into a variable
 json_data=$(cat "$INPUT_FILE_JSON")
