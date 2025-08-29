@@ -74,6 +74,7 @@ for ((i=0; i<length; i++)); do
   # If val is null or not an object, skip
   if [[ "$val" == "null" || $($JQ_BIN 'type' <<<"$val") != "\"object\"" ]]; then
     echo "$obj" >> "$tmpfile"
+
     continue
   fi
 
