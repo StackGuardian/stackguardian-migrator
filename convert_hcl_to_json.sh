@@ -60,8 +60,6 @@ length=$($JQ_BIN length <<<"$json_data")
 # Create a temporary file to store updated objects
 tmpfile=$(mktemp)
 
-> "$tmpfile"
-
 for ((i=0; i<length; i++)); do
   # Extract ith object
   obj=$($JQ_BIN ".[$i]" <<<"$json_data")

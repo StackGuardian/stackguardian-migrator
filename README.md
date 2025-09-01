@@ -83,8 +83,11 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
 ### Bulk import workflows to StackGuardian Platform
 
 - Fetch [sg-cli](https://github.com/StackGuardian/sg-cli.git) and set it up locally (documentation present in repo)
-- Run the following commands and pass the `sg-payload.json` as payload (represented belkkkkkkkkkkow)
-- Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<ORG_ID>/settings?tab=api_key
+- Run the following commands and pass the `sg-payload.json` as payload (represented below)
+- Get your SG API Key here:
+  - Login to Stackguardian.
+  - Go to profile at the bottom left. Click on the eamil or the username.
+  - Click API key and click on view.
 
 ```shell
 cd ../../export
