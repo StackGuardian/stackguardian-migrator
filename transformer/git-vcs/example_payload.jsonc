@@ -1,0 +1,79 @@
+{
+  // This is an example of a single workflow entry in the sg-payload.json output.
+  // The transformer generates a JSON array of these objects — one per Terraform project found.
+
+  "ResourceName": "my-terraform-vpc",  // workflow name — derived from repo name + subdir for monorepos
+  "Description": "Workflow for acme-org/my-terraform-vpc",  // repo description or auto-generated
+  "Tags": ["migrated", "terraform", "infrastructure"],  // config tags + repo topics
+
+  "WfType": "TERRAFORM",  // always TERRAFORM for this transformer
+
+  "TerraformConfig": {
+    "managedTerraformState": false,  // true if --managed-state or config.managed_terraform_state
+    "terraformVersion": "1.5.0",  // inferred from required_version in .tf files, or default 1.5.0
+    "approvalPreApply": false  // true when approvers list is non-empty
+    // "extraCLIArgs": "-var-file=terraform.tfvars"  // added when .tfvars files are detected
+  },
+
+  "DeploymentPlatformConfig": [
+    {
+      "kind": "AWS_RBAC",  // inferred from providers (aws→AWS_RBAC, azurerm→AZURE_STATIC, google→GCP_STATIC), or from config
+      "config": {
+        "integrationId": "/integrations/aws-dev-account",  // from config.yaml or PLEASE_CONFIGURE placeholder
+        "profileName": "default"
+      }
+    }
+  ],
+
+  "VCSConfig": {
+    "iacVCSConfig": {
+      "useMarketplaceTemplate": false,
+      "customSource": {
+        "sourceConfigDestKind": "GITHUB_COM",  // auto-detected from provider, or config override
+        "config": {
+          "repo": "https://github.com/acme-org/my-terraform-vpc",  // repository URL
+          "ref": "main",  // default branch
+          "isPrivate": true,  // from repo metadata
+          "auth": "/integrations/github_com",  // from --vcs-auth or config.vcs_auth_integration
+          "workingDir": "",  // subdirectory path for monorepos (e.g., "infra/vpc")
+          "includeSubModule": false
+        }
+      }
+    },
+    "iacInputData": {
+      "schemaType": "RAW_JSON",
+      "data": {}  // Terraform input variables — empty by default, user can fill in
+    }
+  },
+
+  "RunnerConstraints": {
+    "type": "shared"  // or "private" with "names": ["runner-group"] from config
+  },
+
+  "Approvers": [],  // email addresses from config.approvers
+
+  "EnvironmentVariables": [],  // from config.environment_variables
+
+  "MiniSteps": {
+    "wfChaining": {
+      "ERRORED": [],
+      "COMPLETED": []
+    },
+    "notifications": {
+      "email": {
+        "ERRORED": [],
+        "COMPLETED": [],
+        "APPROVAL_REQUIRED": [],
+        "CANCELLED": []
+      }
+    }
+  },
+
+  "UserSchedules": [],
+
+  "CLIConfiguration": {
+    "WorkflowGroup": {
+      "name": "imported-workflows"  // from --wfgrp or config.wfgrp_name
+    }
+  }
+}

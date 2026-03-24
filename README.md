@@ -5,6 +5,7 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 ## Supported platforms for migration
 
 - Terraform Cloud
+- Git VCS (GitHub, GitLab) — create workflows directly from Terraform repositories
 
 ## Overview
 
@@ -12,11 +13,28 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 - Review the bulk workflow creation payload.
 - Run sg-cli with the bulk workflow creation payload.
 
+## Transformers
+
+### Git VCS (GitHub / GitLab)
+
+Create workflows from Terraform repositories without needing Terraform Cloud. See [transformer/git-vcs/README.md](transformer/git-vcs/README.md) for full docs.
+
+```shell
+cd transformer/git-vcs
+pip install .
+sg-git-scan --provider github --token ghp_xxx --org my-org
+```
+
+### Terraform Cloud
+
+Migrate workspaces from Terraform Cloud/Enterprise.
+
 ## Prerequisites
 
 - An organization on [StackGuardian Platform](https://app.stackguardian.io)
 - Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform.
-- Terraform
+- Terraform (for the Terraform Cloud transformer)
+- Python 3.10+ (for the Git VCS transformer)
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
 
 ### Perform terraform login
