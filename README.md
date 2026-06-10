@@ -20,6 +20,7 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 - [sg-cli](https://github.com/StackGuardian/sg-cli/tree/main/shell)
 
 ### Perform terraform login
+
 Perform `terraform login` to ensure that your local Terraform can interact with your Terraform Cloud/Enterprise account.
 
 ### Export the resource definitions and Terraform state
@@ -37,8 +38,11 @@ terraform apply -auto-approve -var-file=terraform.tfvars
 A new `export` folder should have been created. The `sg-payload.json` file contains the definition for each workflow that will be created for each Terraform Workspace, and the `states` folder contains the files for the Terraform state for each of your workspaces, if the state export was enabled.
 
 After completing the export , edit the `sg-payload.json` file to provide tune each workflow configuration with the following:
-###  Use the example_payload.jsonc file as a reference and edit the schema of the `sg-payload.json`
+
+### Use the example_payload.jsonc file as a reference and edit the schema of the `sg-payload.json`
+
 - `DeploymentPlatformConfig` - This is used to authenticate against a cloud provider using a StackGuardian Integration. Create the relevant integration in StackGuardian platform and update `DeploymentPlatformConfig.kind` from the following "AZURE_STATIC", "AWS_STATIC","GCP_STATIC", "AWS_RBAC". Update `DeploymentPlatformConfig.config.integrationId` with "/integrations/INTEGRATION_NAME" and `DeploymentPlatformConfig.config.profileName` with the name of the integration used upon creation.
+
 ```
   DeploymentPlatformConfig: [
     {
@@ -50,27 +54,27 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
     }
   ]
 ```
+
 - `VCSConfig` - Provide full path to the `repo` like as well the relevant `sourceConfigDestKind` from the following "GITHUB_COM", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS"
-    - `config.auth` 
-    - `config.isPrivate`
-     
+  - `config.auth`
+  - `config.isPrivate`
 - `ResourceName` - name of your StackGuardian Workflow
 - `wfgrpName` - this corresponds to the labelling of workflow group name in the StackGuardian platform
 - `Description` - description for the workflows created in the StackGuardian platform
-- `Tags` - list of tags for the workflows created in the StackGuardian platform 
+- `Tags` - list of tags for the workflows created in the StackGuardian platform
 - `EnvironmentVariables` - environment variables for the workflows created in the StackGuardian platform
 - `RunnerConstraints` - Runner description for the workflows in the StackGuardian platform
-    - Private runners - ``` 
-          "RunnerConstraints": {
-            "type": "private",
-            "names": [
-                "sg-runner"
-            ] 
-          }```
-    - Shared runners - ```
-          "RunnerConstraints": {
-            "type": "shared"
-          }```
+  - Private runners - ` 
+"RunnerConstraints": {
+  "type": "private",
+  "names": [
+      "sg-runner"
+  ] 
+}`
+  - Shared runners - `
+"RunnerConstraints": {
+  "type": "shared"
+}`
 - `Approvers` - Approvers for the workflow to run it successfully
 - `TerraformConfig` - Terraform configuration for the workflows created in the StackGuardian platform
 - `UserSchedules` - Scheduled workflow run configuration for the workflow in the StackGuardian platform
@@ -80,7 +84,10 @@ After completing the export , edit the `sg-payload.json` file to provide tune ea
 
 - Fetch [sg-cli](https://github.com/StackGuardian/sg-cli.git) and set it up locally (documentation present in repo)
 - Run the following commands and pass the `sg-payload.json` as payload (represented below)
-- Get your SG API Key here: https://app.stackguardian.io/orchestrator/orgs/<ORG_ID>/settings?tab=api_key
+- Get your SG API Key here:
+  - Login to Stackguardian.
+  - Go to profile at the bottom left. Click on the eamil or the username.
+  - Click API key and click on view.
 
 ```shell
 cd ../../export
@@ -92,6 +99,16 @@ wget -q "$(wget -qO- "https://api.github.com/repos/stackguardian/sg-cli/releases
 ```
 
 if you want to update a workflow with different details, please re-run the sg-cli command with the modified sg-payload.json and your workflow will be updated with the new details, as long as the ResourceName (Workflow name) remains the same.
+
 ```shell
 ./sg-cli workflow create --bulk --org "<ORG NAME>" -- sg-payload.json
+```
+
+## Convert hcl variables to json
+
+HCL variables in terraform cloud appear as strings in sg-payload.json, which needs to be converted to json.</br >
+It will change the file input file in place so that none of the other steps need any change.
+
+```shell
+./convert_hcl_to_json.sh <intput_file>
 ```
