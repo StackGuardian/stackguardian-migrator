@@ -1,53 +1,62 @@
 #!/bin/bash
+set -euo pipefail
 
-install_jq(){
-    OS=$(uname -s)
-    if [[ "$OS" == "Darwin" ]]; then
-        OS="macos"
-    elif [[ "$OS" == "Linux" ]]; then
-        OS="linux"
-    else
-        echo "Unsupported OS: $OS"
-        exit 1
-    fi
+log() { echo "[convert_hcl_to_json] $*" >&2; }
 
-    ARCH=$(uname -m)
+WORKDIR=$(mktemp -d)
+cleanup() { rm -rf "$WORKDIR"; }
+trap cleanup EXIT
 
-    JQ_BIN="/tmp/jq"
-    url="https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-${OS}-${ARCH}"
-    curl -L -o $JQ_BIN $url
-    chmod +x $JQ_BIN
+# Normalize OS/arch to the names used by the jq and hcl2json release assets.
+OS=$(uname -s)
+case "$OS" in
+  Darwin) OS="macos" ;;
+  Linux) OS="linux" ;;
+  *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
+esac
 
-}
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64 | amd64) ARCH="amd64" ;;
+  aarch64 | arm64) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 
-install_hcl2json(){
-    OS=$(uname -s)
-    if [[ "$OS" == "Darwin" ]]; then
-        OS="darwin"
-    elif [[ "$OS" == "Linux" ]]; then
-        OS="linux"
-    else
-        echo "Unsupported OS: $OS"
-        exit 1
-    fi
+JQ_BIN="$WORKDIR/jq"
+HCL2JSON_BIN="$WORKDIR/hcl2json"
 
-    ARCH=$(uname -m)
-
-    HCL2JSON_BIN="/tmp/hcl2json"
-
-    url="https://github.com/tmccombs/hcl2json/releases/download/v0.6.7/hcl2json_${OS}_${ARCH}"
-    echo $url
-    curl -L -o $HCL2JSON_BIN $url
-    chmod +x $HCL2JSON_BIN
-}
-
-
-INPUT_FILE_JSON="$1"
-if [ -z "$INPUT_FILE_JSON" ]; then
-    echo "Usage: $0 <input_file.json>"
+install_jq() {
+  local url="https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-${OS}-${ARCH}"
+  if ! curl -fsSL -o "$JQ_BIN" "$url"; then
+    echo "Failed to download jq from $url" >&2
     exit 1
+  fi
+  chmod +x "$JQ_BIN"
+}
+
+install_hcl2json() {
+  # hcl2json uses "darwin" rather than "macos" for the OS segment.
+  local hcl_os="$OS"
+  [[ "$hcl_os" == "macos" ]] && hcl_os="darwin"
+  local url="https://github.com/tmccombs/hcl2json/releases/download/v0.6.7/hcl2json_${hcl_os}_${ARCH}"
+  if ! curl -fsSL -o "$HCL2JSON_BIN" "$url"; then
+    echo "Failed to download hcl2json from $url" >&2
+    exit 1
+  fi
+  chmod +x "$HCL2JSON_BIN"
+}
+
+INPUT_FILE_JSON="${1:-}"
+if [ -z "$INPUT_FILE_JSON" ]; then
+  echo "Usage: $0 <input_file.json>"
+  exit 1
+fi
+if [ ! -f "$INPUT_FILE_JSON" ]; then
+  echo "Input file not found: $INPUT_FILE_JSON" >&2
+  exit 1
 fi
 
+log "Downloading jq and hcl2json..."
 install_jq
 install_hcl2json
 
@@ -56,64 +65,72 @@ json_data=$(cat "$INPUT_FILE_JSON")
 
 # Use jq to get the length of array
 length=$($JQ_BIN length <<<"$json_data")
+log "Processing $length workflow(s) from $INPUT_FILE_JSON"
 
-# Create a temporary file to store updated objects
-tmpfile=$(mktemp)
+# Accumulate updated objects as newline-delimited JSON
+tmpfile="$WORKDIR/updated.ndjson"
+: >"$tmpfile"
 
-for ((i=0; i<length; i++)); do
+JSON_PATH=".VCSConfig.iacInputData.data"
+
+for ((i = 0; i < length; i++)); do
   # Extract ith object
   obj=$($JQ_BIN ".[$i]" <<<"$json_data")
-  
-  JSON_PATH=".VCSConfig.iacInputData.data"
 
   # Extract the value at JSON_PATH from the object
   val=$($JQ_BIN -c "$JSON_PATH" <<<"$obj")
 
-  # If val is null or not an object, skip
+  # If val is null or not an object, leave the object untouched
   if [[ "$val" == "null" || $($JQ_BIN 'type' <<<"$val") != "\"object\"" ]]; then
-    echo "$obj" >> "$tmpfile"
-
+    echo "$obj" >>"$tmpfile"
     continue
   fi
 
-  # Initialize new_val as empty object
-  new_val="{}"
+  # Start from the original data; only convert keys that hold HCL collections.
+  new_val="$val"
 
-  # Loop over key-value pairs in val
-  keys=$($JQ_BIN -r 'keys[]' <<<"$val")
-  for key in $keys; do
-    # Get the string value for the key
-    value=$($JQ_BIN --arg k "$key" '.[$k]' <<<"$val" | sed 's/\\"/"/g')
-    value="${value%\"}"
-    value="${value#\"}"
-    value="temp = $value"
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
 
-    # Heuristic: if value contains '=', treat as HCL string
-    if [[ "$value" == *"="* ]]; then
-      # Convert HCL to JSON using hcl2json
-      parsed=$(echo -e "$value" | $HCL2JSON_BIN | $JQ_BIN -c '.temp')
-      if [[ $? -eq 0 && "$parsed" != "" ]]; then
-        # Add parsed json as the key's value
-        new_val=$($JQ_BIN --arg k "$key" --argjson v "$parsed" '. + {($k): $v}' <<<"$new_val")
-      else
-        # If parse fails, keep original string
-        echo "parsing failed: $value"
-        new_val=$($JQ_BIN --arg k "$key" --arg v "$value" '. + {($k): $v}' <<<"$new_val")
-      fi
-    else
-      # Not HCL, keep as string
-      new_val=$($JQ_BIN --arg k "$key" --arg v "$value" '. + {($k): $v}' <<<"$new_val")
+    # Only string values are candidates for HCL conversion; objects/arrays
+    # (e.g. already-converted data) and other scalars are left as-is.
+    vtype=$($JQ_BIN -r --arg k "$key" '.[$k] | type' <<<"$val")
+    if [[ "$vtype" != "string" ]]; then
+      continue
     fi
-  done
 
-  # Update the object by assigning new_val back at JSON_PATH
+    # -r decodes JSON string escapes correctly (no manual unquoting).
+    raw=$($JQ_BIN -r --arg k "$key" '.[$k]' <<<"$val")
+
+    # Left-trim whitespace to inspect the first meaningful character.
+    trimmed=${raw#"${raw%%[![:space:]]*}"}
+
+    # Only treat values that look like an HCL object/list as HCL; plain
+    # scalar strings (ids, names, ...) must pass through unchanged.
+    if [[ "$trimmed" != "{"* && "$trimmed" != "["* ]]; then
+      continue
+    fi
+
+    # Wrap as an HCL attribute so hcl2json can parse the bare expression.
+    parsed=$(printf 'temp = %s\n' "$raw" | "$HCL2JSON_BIN" 2>/dev/null | "$JQ_BIN" -c '.temp' 2>/dev/null) || parsed=""
+
+    if [[ -n "$parsed" && "$parsed" != "null" ]]; then
+      log "  workflow $((i + 1)): converted '$key' from HCL to JSON"
+      new_val=$($JQ_BIN --arg k "$key" --argjson v "$parsed" '. + {($k): $v}' <<<"$new_val")
+    else
+      log "  workflow $((i + 1)): parsing failed, keeping original value for '$key'"
+    fi
+  done < <($JQ_BIN -r 'keys[]' <<<"$val")
+
+  # Assign the converted data back at JSON_PATH
   updated_obj=$($JQ_BIN --argjson nv "$new_val" "$JSON_PATH = \$nv" <<<"$obj")
 
-  # Save updated object
-  echo "$updated_obj" >> "$tmpfile"
+  echo "$updated_obj" >>"$tmpfile"
 done
 
-# Combine updated objects into an array and overwrite the original file
-$JQ_BIN -s '.' "$tmpfile" > "$INPUT_FILE_JSON"
-
-rm "$tmpfile" $HCL2JSON_BIN $JQ_BIN
+# Combine updated objects into an array, writing to a temp file first so the
+# input is only overwritten once the conversion fully succeeds.
+outfile="$WORKDIR/output.json"
+$JQ_BIN -s '.' "$tmpfile" >"$outfile"
+mv "$outfile" "$INPUT_FILE_JSON"
+log "Done. Updated $INPUT_FILE_JSON in place."
