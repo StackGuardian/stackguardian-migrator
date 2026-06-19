@@ -60,7 +60,7 @@ locals {
 
     TerraformConfig = {
       "managedTerraformState" : true,
-      "terraformVersion" : data.tfe_workspace.data[i].terraform_version,
+      "terraformVersion" : "TERRAFORM-${data.tfe_workspace.data[i].terraform_version}",
       "approvalPreApply" : !data.tfe_workspace.data[i].auto_apply
     }
 

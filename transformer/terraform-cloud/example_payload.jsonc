@@ -33,7 +33,7 @@
   "Tags": [], // workflow tags
   "TerraformConfig": {
     "managedTerraformState": true, // managed state from StackGuardian
-    "terraformVersion": "1.1.6" // version of terraform
+    "terraformVersion": "TERRAFORM-1.1.6" // version of terraform
   },
   "UserSchedules": [],
   "VCSConfig": {
