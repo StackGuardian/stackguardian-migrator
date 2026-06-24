@@ -20,7 +20,7 @@ exportPath = "export"
 SGDefaultWfApprovers = []
 
 # Prefix for your repo URL
-SGDefaultIACVCSRepoPrefix = "https://www.github.com"
+SGDefaultIACVCSRepoPrefix = "https://github.com"
 
 # Provide an integration id like /integrations/aws-dev-account or /secrets/my-git-token
 SGDefaultVCSAuthIntegrationID = "/integrations/github_com"
@@ -38,3 +38,49 @@ SGDefaultDeploymentPlatformConfig = [
 
 # Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
 SGDefaultSourceConfigDestKind = "GITHUB_COM"
+
+# SG Terraform version used when a workspace's terraform_version is not a pinned
+# semver (e.g. "latest" or a constraint), or runs an engine SG cannot map.
+SGDefaultTerraformVersion = "TERRAFORM-1.5.7"
+
+# Pre-configure VCS triggers on each VCS-backed workflow, remapped from the
+# workspace's own TFC settings (tracked branch, push, PR speculative plans, file
+# triggers). Set false to import workflows without any triggers.
+SGDefaultEnableVCSTriggers = true
+
+# Re-pull state for every workspace on each apply. Leave false for idempotent runs.
+forceStateRefresh = false
+
+# Per-workspace overrides, keyed by workspace name. Any field set here wins over
+# the SGDefault* value above, for that workspace only. All fields are optional.
+# workspaceOverrides = {
+#   "prod-networking" = {
+#     DeploymentPlatformConfig = [
+#       {
+#         "kind" : "AWS_RBAC",
+#         "config" : { "integrationId" : "/integrations/aws-prod", "profileName" : "default" }
+#       }
+#     ]
+#     RunnerConstraints    = { "type" : "private", "names" : ["sg-runner"] }
+#     Approvers            = ["lead@example.com"]
+#     vcsAuthIntegrationID = "/integrations/github_prod"
+#     vcsRepoPrefix        = "https://www.github.com"
+#     sourceConfigDestKind = "GITHUB_COM"
+#     terraformVersion     = "TERRAFORM-1.7.5"
+#     extraEnvironmentVariables = [
+#       { "config" : { "textValue" : "us-east-1", "varName" : "AWS_REGION" }, "kind" : "PLAIN_TEXT" }
+#     ]
+#     # Full override of the derived VCS triggers (replaces the remap entirely).
+#     VCSTriggers = {
+#       type                  = "GITHUB_COM"
+#       tracked_branch        = "main"
+#       approval_pre_apply    = true
+#       plan_only             = false
+#       push                  = { createWfRun = { enabled = true } }
+#       pull_request_opened   = { createWfRun = { enabled = true } }
+#       pull_request_modified = { createWfRun = { enabled = true } }
+#       file_triggers_enabled = true
+#       file_trigger_patterns = ["modules/networking/*"]
+#     }
+#   }
+# }

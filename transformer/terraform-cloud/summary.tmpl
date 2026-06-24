@@ -1,0 +1,52 @@
+# StackGuardian migration summary
+
+- Organization: ${summary.organization}
+- Workspaces processed: ${summary.workspaceCount}
+
+## Workflows per project
+%{ for project, count in summary.projectWorkspaceCounts ~}
+- ${project}: ${count}
+%{ endfor ~}
+
+## Skipped sensitive variables
+These are not migrated (TFC never returns sensitive values). Recreate them as SG secrets after import.
+%{ if length(summary.skippedSensitiveVars) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, vars in summary.skippedSensitiveVars ~}
+- ${ws}: ${join(", ", vars)}
+%{ endfor ~}
+%{ endif ~}
+
+## Terraform version fallbacks
+Workspaces whose version was not a pinned semver; the configured SGDefaultTerraformVersion was used.
+%{ if length(summary.terraformVersionFallbacks) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, ver in summary.terraformVersionFallbacks ~}
+- ${ws}: reported "${ver}"
+%{ endfor ~}
+%{ endif ~}
+
+## Non-remote execution modes
+TFC may not hold state for these (local/agent execution); state export can be empty.
+%{ if length(summary.nonRemoteExecutionModes) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, mode in summary.nonRemoteExecutionModes ~}
+- ${ws}: ${mode}
+%{ endfor ~}
+%{ endif ~}
+
+## Renamed workspaces
+%{ if length(summary.renamedWorkspaces) == 0 ~}
+- None.
+%{ else ~}
+%{ for orig, new in summary.renamedWorkspaces ~}
+- ${orig} -> ${new}
+%{ endfor ~}
+%{ endif ~}
+
+## Reminders
+- ${summary.variableSetsReminder}
+- If state export ran, check state-export-failures.log in the export directory for workspaces whose state could not be pulled.

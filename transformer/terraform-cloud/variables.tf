@@ -15,6 +15,12 @@ variable "exportStateFiles" {
   type        = bool
 }
 
+variable "tfHostname" {
+  default     = "app.terraform.io"
+  description = "TFC/TFE hostname used for the state-export API and the `terraform login` credential lookup."
+  type        = string
+}
+
 variable "tfWorkspaceTags" {
   default     = null
   description = "List of TFC/TFE workspace tags to include when exporting. Excluded tags take precedence over included ones. Wildcards are not supported."
@@ -69,4 +75,38 @@ variable "SGDefaultSourceConfigDestKind" {
   default     = "GIT_OTHER"
   description = "Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER"
   type        = string
+}
+
+variable "SGDefaultTerraformVersion" {
+  default     = "TERRAFORM-1.5.7"
+  description = "SG Terraform version used when a workspace's terraform_version is not a pinned semver (e.g. 'latest' or a version constraint), or the workspace runs an engine SG cannot map. Use the SG-formatted value, e.g. TERRAFORM-1.5.7."
+  type        = string
+}
+
+variable "SGDefaultEnableVCSTriggers" {
+  default     = true
+  description = "Pre-configure VCS triggers on each VCS-backed workflow, remapped from the workspace's own TFC settings (tracked branch, push, PR speculative plans, file triggers). Set false to import workflows without any triggers. Per-workspace overrides via workspaceOverrides[name].VCSTriggers."
+  type        = bool
+}
+
+variable "forceStateRefresh" {
+  default     = false
+  description = "Re-pull Terraform state for every workspace on each apply. When false (default), state export is idempotent and only runs for workspaces it has not exported before."
+  type        = bool
+}
+
+variable "workspaceOverrides" {
+  default     = {}
+  description = "Per-workspace overrides keyed by TFC/TFE workspace name. Any field set here takes precedence over the matching SGDefault* value for that workspace only."
+  type = map(object({
+    DeploymentPlatformConfig  = optional(list(any))
+    RunnerConstraints         = optional(any)
+    Approvers                 = optional(list(string))
+    vcsAuthIntegrationID      = optional(string)
+    vcsRepoPrefix             = optional(string)
+    sourceConfigDestKind      = optional(string)
+    terraformVersion          = optional(string)
+    extraEnvironmentVariables = optional(list(any), [])
+    VCSTriggers               = optional(any)
+  }))
 }
