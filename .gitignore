@@ -163,4 +163,7 @@ out/*
 zip
 zip/*
 
+# Migrator local cache + config (downloaded tool binaries, workflow-group map)
+.sg/
+
 .DS_Store

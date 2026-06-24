@@ -1,50 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-log() { echo "[convert_hcl_to_json] $*" >&2; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools.sh
+source "$SCRIPT_DIR/tools.sh"
 
-WORKDIR=$(mktemp -d)
-cleanup() { rm -rf "$WORKDIR"; }
-trap cleanup EXIT
-
-# Normalize OS/arch to the names used by the jq and hcl2json release assets.
-OS=$(uname -s)
-case "$OS" in
-  Darwin) OS="macos" ;;
-  Linux) OS="linux" ;;
-  *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
-esac
-
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64 | amd64) ARCH="amd64" ;;
-  aarch64 | arm64) ARCH="arm64" ;;
-  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
-
-JQ_BIN="$WORKDIR/jq"
-HCL2JSON_BIN="$WORKDIR/hcl2json"
-
-install_jq() {
-  local url="https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-${OS}-${ARCH}"
-  if ! curl -fsSL -o "$JQ_BIN" "$url"; then
-    echo "Failed to download jq from $url" >&2
-    exit 1
-  fi
-  chmod +x "$JQ_BIN"
-}
-
-install_hcl2json() {
-  # hcl2json uses "darwin" rather than "macos" for the OS segment.
-  local hcl_os="$OS"
-  [[ "$hcl_os" == "macos" ]] && hcl_os="darwin"
-  local url="https://github.com/tmccombs/hcl2json/releases/download/v0.6.7/hcl2json_${hcl_os}_${ARCH}"
-  if ! curl -fsSL -o "$HCL2JSON_BIN" "$url"; then
-    echo "Failed to download hcl2json from $url" >&2
-    exit 1
-  fi
-  chmod +x "$HCL2JSON_BIN"
-}
+# Detail lines are shown only in verbose mode; warnings always show.
+log() { [ "${SG_VERBOSE:-0}" = "1" ] || return 0; printf '%s[convert]%s %s\n' "$C_CYAN" "$C_RESET" "$*" >&2; }
 
 INPUT_FILE_JSON="${1:-}"
 if [ -z "$INPUT_FILE_JSON" ]; then
@@ -56,16 +18,20 @@ if [ ! -f "$INPUT_FILE_JSON" ]; then
   exit 1
 fi
 
-log "Downloading jq and hcl2json..."
-install_jq
-install_hcl2json
+WORKDIR=$(mktemp -d)
+cleanup() { rm -rf "$WORKDIR"; }
+trap cleanup EXIT
+
+# Resolve tooling from PATH (Docker image) or download+cache (native).
+JQ_BIN=$(sg_resolve jq sg_ensure_jq)
+HCL2JSON_BIN=$(sg_resolve hcl2json sg_ensure_hcl2json)
 
 # Read entire JSON array into a variable
 json_data=$(cat "$INPUT_FILE_JSON")
 
 # Use jq to get the length of array
 length=$($JQ_BIN length <<<"$json_data")
-log "Processing $length workflow(s) from $INPUT_FILE_JSON"
+log "Processing $length workflow(s) from $(sg_rel "$INPUT_FILE_JSON")"
 
 # Accumulate updated objects as newline-delimited JSON
 tmpfile="$WORKDIR/updated.ndjson"
@@ -118,7 +84,7 @@ for ((i = 0; i < length; i++)); do
       log "  workflow $((i + 1)): converted '$key' from HCL to JSON"
       new_val=$($JQ_BIN --arg k "$key" --argjson v "$parsed" '. + {($k): $v}' <<<"$new_val")
     else
-      log "  workflow $((i + 1)): parsing failed, keeping original value for '$key'"
+      sg_warn "$(sg_rel "$INPUT_FILE_JSON") workflow $((i + 1)): could not parse '$key' as HCL; keeping original value"
     fi
   done < <($JQ_BIN -r 'keys[]' <<<"$val")
 
@@ -133,4 +99,4 @@ done
 outfile="$WORKDIR/output.json"
 $JQ_BIN -s '.' "$tmpfile" >"$outfile"
 mv "$outfile" "$INPUT_FILE_JSON"
-log "Done. Updated $INPUT_FILE_JSON in place."
+log "Done. Updated $(sg_rel "$INPUT_FILE_JSON") in place."
