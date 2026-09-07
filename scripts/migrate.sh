@@ -883,8 +883,16 @@ preflight)
 checklist) cmd_checklist ;;
 all)
   if [ ! -f "$TFVARS" ]; then
-    cmd_init
-    die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
+    cmd_init || exit 1
+    if ! sg_interactive; then
+      # Template copy: it still contains placeholders.
+      die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
+    fi
+    echo >&2
+    if ! sg_confirm "Continue with the migration now? (No = edit $(sg_rel "$TFVARS") first, e.g. workspaceOverrides, then re-run '$PROG all')" Y; then
+      sg_log "edit $(sg_rel "$TFVARS"), then re-run '$PROG all'"
+      exit 0
+    fi
   fi
   # Fail fast on everything the whole pipeline needs, before the (long) apply.
   export SG_API_TOKEN SG_BASE_URL
