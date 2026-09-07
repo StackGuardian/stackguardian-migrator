@@ -40,6 +40,11 @@ done
 # Let migrate.sh print the name the user actually invoked in its help/hints.
 export SG_PROG="${0##*/}"
 case "$0" in */*) SG_PROG="./${0##*/}" ;; esac
+# The shell the user is typing in (for the completion hint): the parent process,
+# not $SHELL, which is only the login shell and is often wrong (bash vs zsh).
+SG_SHELL="$(ps -p "$PPID" -o comm= 2>/dev/null | sed 's/^-//; s#.*/##')"
+case "$SG_SHELL" in bash | zsh) ;; *) SG_SHELL="$(basename "${SHELL:-zsh}")" ;; esac
+export SG_SHELL
 
 if [ "$NATIVE" = "1" ] || ! command -v docker >/dev/null 2>&1; then
   [ "$NATIVE" = "1" ] || sg_warn "docker not found; running natively"
@@ -54,7 +59,7 @@ fi
 DOCKER_ARGS=(--rm -i
   -v "$SCRIPT_DIR:/app" -w /app
   -e SG_API_TOKEN -e SG_ORG -e SG_BASE_URL -e SG_CONCURRENCY -e SG_RETRIES -e SG_TF_PARALLELISM
-  -e TFE_TOKEN -e SG_PROG -e SG_NONINTERACTIVE -e SG_UI_URL)
+  -e TFE_TOKEN -e SG_PROG -e SG_SHELL -e SG_NONINTERACTIVE -e SG_UI_URL)
 
 # Interactive TTY only when attached to one (so the confirmation prompt works,
 # but CI/non-tty invocations still run — use -y there).
