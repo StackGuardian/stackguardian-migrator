@@ -25,7 +25,10 @@ fi
 
 HOST="${SG_TFC_HOSTNAME:-app.terraform.io}"
 API="https://$HOST/api/v2"
-command -v curl >/dev/null 2>&1 || { sg_err "curl is required for variable-set enrichment"; exit 1; }
+command -v curl >/dev/null 2>&1 || {
+  sg_err "curl is required for variable-set enrichment"
+  exit 1
+}
 JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
 
 # TFC token (same sources as state export): credentials file or TFE_TOKEN.
@@ -48,7 +51,8 @@ fetch_all() {
   : >"$WORK/acc.ndjson"
   while :; do
     if ! curl -fsS "${AUTH[@]}" "$API/$path?page%5Bsize%5D=100&page%5Bnumber%5D=$page" >"$WORK/page.json"; then
-      sg_err "TFC API request failed: $path"; return 1
+      sg_err "TFC API request failed: $path"
+      return 1
     fi
     "$JQ_BIN" -c '.data[]?' "$WORK/page.json" >>"$WORK/acc.ndjson"
     next="$("$JQ_BIN" -r '.meta.pagination."next-page" // empty' "$WORK/page.json" 2>/dev/null || true)"
@@ -61,17 +65,17 @@ fetch_all() {
 sg_log "fetching workspaces and variable sets from $HOST (org: $ORG)..."
 
 # name -> {id, project}
-fetch_all "organizations/$ORG/workspaces" \
-  | "$JQ_BIN" '[.[] | {name: .attributes.name, id: .id, project: (.relationships.project.data.id // "")}]' \
-  >"$WORK/workspaces.json" || exit 1
+fetch_all "organizations/$ORG/workspaces" |
+  "$JQ_BIN" '[.[] | {name: .attributes.name, id: .id, project: (.relationships.project.data.id // "")}]' \
+    >"$WORK/workspaces.json" || exit 1
 
 # Each set with its scope + variables.
 : >"$WORK/sets.ndjson"
 sets_raw="$(fetch_all "organizations/$ORG/varsets")" || exit 1
 echo "$sets_raw" | "$JQ_BIN" -c '.[]' | while IFS= read -r s; do
   sid="$(echo "$s" | "$JQ_BIN" -r '.id')"
-  vars="$(curl -fsS "${AUTH[@]}" "$API/varsets/$sid/relationships/vars" 2>/dev/null \
-    | "$JQ_BIN" -c '[.data[]? | {key: .attributes.key, value: (.attributes.value // ""), category: .attributes.category, sensitive: (.attributes.sensitive // false), hcl: (.attributes.hcl // false)}]' 2>/dev/null || echo '[]')"
+  vars="$(curl -fsS "${AUTH[@]}" "$API/varsets/$sid/relationships/vars" 2>/dev/null |
+    "$JQ_BIN" -c '[.data[]? | {key: .attributes.key, value: (.attributes.value // ""), category: .attributes.category, sensitive: (.attributes.sensitive // false), hcl: (.attributes.hcl // false)}]' 2>/dev/null || echo '[]')"
   echo "$s" | "$JQ_BIN" -c --argjson vars "$vars" '{
     name: .attributes.name,
     global: (.attributes.global // false),

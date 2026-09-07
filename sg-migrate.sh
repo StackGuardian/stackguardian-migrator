@@ -21,9 +21,9 @@ BUILD=0
 ARGS=()
 for a in "$@"; do
   case "$a" in
-    --native | --local) NATIVE=1 ;;
-    --build) BUILD=1 ;;
-    *) ARGS+=("$a") ;;
+  --native | --local) NATIVE=1 ;;
+  --build) BUILD=1 ;;
+  *) ARGS+=("$a") ;;
   esac
 done
 
