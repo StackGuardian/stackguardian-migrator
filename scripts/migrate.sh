@@ -294,10 +294,23 @@ cmd_clean() {
   sg_success "clean complete"
 }
 
+# require_tfc_auth — fail fast with a clear message when no TFC/TFE credential
+# is available for the tfe provider. Accepted: TFE_TOKEN, any TF_TOKEN_* var
+# (terraform's per-host token env), or the `terraform login` credentials file.
+# Without this, terraform fails later with a confusing "Invalid provider
+# configuration" error.
+require_tfc_auth() {
+  [ -n "${TFE_TOKEN:-}" ] && return 0
+  if env | grep -q '^TF_TOKEN_'; then return 0; fi
+  [ -f "$HOME/.terraform.d/credentials.tfrc.json" ] && return 0
+  die "no Terraform Cloud/Enterprise credentials found. Set TFE_TOKEN=<long-lived API token> (recommended) or run 'terraform login' before '$PROG apply'."
+}
+
 cmd_apply() {
   sg_step "Phase: apply (terraform)"
   command -v terraform >/dev/null 2>&1 || die "terraform not found on PATH"
-  [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $0 init (then edit it)."
+  [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init (then edit it)."
+  require_tfc_auth
   # State export (TFC API) calls curl + jq from terraform's local-exec; make sure
   # both are on PATH for the apply (jq from cache if not already installed).
   command -v curl >/dev/null 2>&1 || die "curl is required for state export"
@@ -713,7 +726,8 @@ all)
     cmd_init
     die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
   fi
-  # Fail fast on import prerequisites before the (long) apply.
+  # Fail fast on prerequisites before the (long) apply.
+  require_tfc_auth
   [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set (needed for import)."
   [ -n "$ORG" ] || die "StackGuardian org not set (use --org or SG_ORG)."
   cmd_apply

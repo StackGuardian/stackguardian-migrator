@@ -16,3 +16,10 @@ terraform {
     }
   }
 }
+
+# Token comes from TFE_TOKEN / TF_TOKEN_<host> or the `terraform login`
+# credentials file; only the hostname is configured here so TFE (self-hosted)
+# installs work by setting tfHostname.
+provider "tfe" {
+  hostname = var.tfHostname
+}
