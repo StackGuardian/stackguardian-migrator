@@ -106,15 +106,19 @@ sg_log "resolving $set_count variable set(s) across workspaces..."
     )
 ' >"$WORK/effective.json"
 
+# TFC-specific variables are stripped here too (same patterns as the transformer).
+IGNORE_JSON="$(tfvars_get_json .ignoreVarPatterns)"
+[ "$IGNORE_JSON" = "null" ] && IGNORE_JSON='["^TFC_","^TFE_"]'
+
 # Merge the effective set vars into each payload, then report counts.
 for f in "$@"; do
   before_tf="$("$JQ_BIN" '[.[].VCSConfig.iacInputData.data | length] | add // 0' "$f")"
   out="$WORK/merged.json"
-  "$JQ_BIN" --slurpfile eff "$WORK/effective.json" '
+  "$JQ_BIN" --slurpfile eff "$WORK/effective.json" --argjson ignore "$IGNORE_JSON" '
     ($eff[0]) as $E
     | map(
         ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) as $wsName
-        | ($E[$wsName] // []) as $all
+        | ($E[$wsName] // [] | map(select(.key as $k | [$ignore[] | . as $p | select($k | test($p))] | length == 0))) as $all
         | ($all | map(select(.sensitive != true and .category == "terraform"))) as $tf
         | ($all | map(select(.sensitive != true and .category == "env"))) as $env
         | .VCSConfig.iacInputData.data = (

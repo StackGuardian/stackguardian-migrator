@@ -24,11 +24,21 @@ locals {
     name => length(local.sanitizedGroups[san]) > 1 ? "${length(san) > 93 ? substr(san, 0, 93) : san}-${substr(md5(name), 0, 6)}" : san
   }
 
+  # TFC-specific variables (TFC_*, TFE_* by default) are meaningless in SG and
+  # are stripped; recorded per workspace so the summary can list them.
+  strippedVars = {
+    for name, id in data.tfe_workspace_ids.data.ids :
+    name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
+    if anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])]
+  }
+
   # TFC never returns values for sensitive variables, so they cannot be
-  # migrated. Record them per workspace so the summary can flag them.
+  # migrated. Record them per workspace so the summary can flag them
+  # (stripped variables excluded — nobody needs a secret stub for those).
   sensitiveVars = {
     for name, id in data.tfe_workspace_ids.data.ids :
-    name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}" if v.sensitive]
+    name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
+    if v.sensitive && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])]
   }
 
   # Workspaces whose terraform_version is not a pinned semver (e.g. "latest" or
@@ -72,7 +82,7 @@ locals {
       EnvironmentVariables = concat(
         [for v in data.tfe_variables.data[wsId].variables :
           { "config" : { "textValue" : v.value, "varName" : v.name }, "kind" : "PLAIN_TEXT" }
-        if v.category == "env" && v.sensitive == false],
+        if v.category == "env" && v.sensitive == false && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])],
         try(var.workspaceOverrides[wsName].extraEnvironmentVariables, [])
       )
 
@@ -96,7 +106,7 @@ locals {
         },
         "iacInputData" : {
           "schemaType" : "RAW_JSON",
-          "data" : { for v in data.tfe_variables.data[wsId].variables : v.name => try(jsondecode(v.value), v.value) if v.category == "terraform" && v.sensitive == false }
+          "data" : { for v in data.tfe_variables.data[wsId].variables : v.name => try(jsondecode(v.value), v.value) if v.category == "terraform" && v.sensitive == false && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))]) }
         }
       }
 
@@ -192,6 +202,8 @@ locals {
     workspaceCount            = length(local.workflowNames)
     projectWorkspaceCounts    = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
     skippedSensitiveVars      = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
+    strippedVars              = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
+    ignoreVarPatterns         = var.ignoreVarPatterns
     terraformVersionFallbacks = local.versionFallbacks
     nonRemoteExecutionModes   = local.nonRemoteModes
     renamedWorkspaces         = { for name in local.workflowNames : name => local.resourceNames[name] if local.resourceNames[name] != name }

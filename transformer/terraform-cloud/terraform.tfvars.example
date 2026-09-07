@@ -16,6 +16,10 @@ tfWorkspaceIgnoreTags = null
 # Directory to export Terraform files to
 exportPath = "export"
 
+# TFC/TFE-specific variables that are not migrated (regexes on the variable
+# name), e.g. TFC_WORKSPACE_NAME or TFC_AWS_RUN_ROLE_ARN. [] keeps everything.
+ignoreVarPatterns = ["^TFC_", "^TFE_"]
+
 # Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true
 SGDefaultWfApprovers = []
 

@@ -39,6 +39,12 @@ variable "exportPath" {
   type        = string
 }
 
+variable "ignoreVarPatterns" {
+  default     = ["^TFC_", "^TFE_"]
+  description = "Regexes (matched against the variable name) for TFC/TFE-specific variables that have no meaning outside Terraform Cloud and are not migrated, e.g. TFC_WORKSPACE_NAME or the TFC_AWS_* dynamic-credential settings. Applies to terraform and env variables, including variable-set variables. Set to [] to keep everything; stripped variables are listed in migration-summary.md."
+  type        = list(string)
+}
+
 variable "SGDefaultWfApprovers" {
   default     = []
   description = "Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true"

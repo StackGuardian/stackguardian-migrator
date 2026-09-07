@@ -195,6 +195,12 @@ wizard_policy() {
   W_TF_VERSION="$(_w_default .SGDefaultTerraformVersion TERRAFORM-1.5.7)"
   if sg_confirm "Export Terraform state for each workspace?" "$([ "$(_w_default .exportStateFiles true)" = "false" ] && echo N || echo Y)"; then W_EXPORT_STATE=true; else W_EXPORT_STATE=false; fi
   if sg_confirm "Pre-configure VCS triggers (push / pull-request runs) from the TFC settings?" "$([ "$(_w_default .SGDefaultEnableVCSTriggers true)" = "false" ] && echo N || echo Y)"; then W_TRIGGERS=true; else W_TRIGGERS=false; fi
+  sg_dim "TFC_* / TFE_* variables (e.g. TFC_WORKSPACE_NAME, TFC_AWS_RUN_ROLE_ARN) only mean something inside Terraform Cloud."
+  if sg_confirm "Strip TFC-specific variables (TFC_*, TFE_*) from the migrated workflows?" "$([ "$(tfvars_get_json .ignoreVarPatterns)" = "[]" ] && echo N || echo Y)"; then
+    W_IGNORE_PATTERNS_JSON='["^TFC_","^TFE_"]'
+  else
+    W_IGNORE_PATTERNS_JSON='[]'
+  fi
 }
 
 # --- step 4: review + write ----------------------------------------------------
@@ -208,6 +214,7 @@ wizard_review() {
   row "Cloud connector" "$W_DPC_JSON"
   row "Runners" "$W_RUNNER_JSON"
   row "State export / triggers" "$W_EXPORT_STATE / $W_TRIGGERS"
+  row "Strip variables matching" "$W_IGNORE_PATTERNS_JSON"
   row "Fallback Terraform" "$W_TF_VERSION${W_WS_ABOVE_CEILING:+  ($W_WS_ABOVE_CEILING workspace(s) pinned above 1.5.7 (the last FOSS runtime SG bundles) will use it)}"
   [ "${W_DPC_PLACEHOLDER:-0}" -eq 1 ] && sg_warn "cloud connector left as a placeholder — edit SGDefaultDeploymentPlatformConfig in $(sg_rel "$TFVARS") before 'apply'"
   sg_dim "approvers, repo URL prefix and the fallback version can be edited in $(sg_rel "$TFVARS")"

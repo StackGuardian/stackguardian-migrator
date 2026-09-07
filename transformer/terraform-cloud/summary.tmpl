@@ -18,6 +18,16 @@ These are not migrated (TFC never returns sensitive values). Recreate them as SG
 %{ endfor ~}
 %{ endif ~}
 
+## Stripped TFC-specific variables
+Not migrated because they only mean something inside Terraform Cloud (patterns: ${join(", ", summary.ignoreVarPatterns)}; set ignoreVarPatterns = [] to keep them).
+%{ if length(summary.strippedVars) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, vars in summary.strippedVars ~}
+- ${ws}: ${join(", ", vars)}
+%{ endfor ~}
+%{ endif ~}
+
 ## Terraform version fallbacks
 Workspaces whose version was not a pinned semver; the configured SGDefaultTerraformVersion was used.
 %{ if length(summary.terraformVersionFallbacks) == 0 ~}
