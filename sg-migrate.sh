@@ -54,7 +54,7 @@ fi
 DOCKER_ARGS=(--rm -i
   -v "$SCRIPT_DIR:/app" -w /app
   -e SG_API_TOKEN -e SG_ORG -e SG_BASE_URL -e SG_CONCURRENCY -e SG_RETRIES -e SG_TF_PARALLELISM
-  -e TFE_TOKEN -e SG_PROG)
+  -e TFE_TOKEN -e SG_PROG -e SG_NONINTERACTIVE -e SG_UI_URL)
 
 # Interactive TTY only when attached to one (so the confirmation prompt works,
 # but CI/non-tty invocations still run — use -y there).
