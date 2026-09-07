@@ -15,6 +15,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tools.sh
 source "$SCRIPT_DIR/tools.sh"
+# shellcheck source=lib/tfvars.sh
+source "$SCRIPT_DIR/lib/tfvars.sh"
+# shellcheck source=lib/tfc_api.sh
+source "$SCRIPT_DIR/lib/tfc_api.sh"
+TFVARS="${TFVARS:-$SG_REPO_ROOT/transformer/terraform-cloud/terraform.tfvars}"
 
 ORG="${1:-}"
 shift || true
@@ -23,44 +28,25 @@ if [ -z "$ORG" ] || [ "$#" -eq 0 ]; then
   exit 1
 fi
 
-HOST="${SG_TFC_HOSTNAME:-app.terraform.io}"
-API="https://$HOST/api/v2"
+TFC_HOST="${SG_TFC_HOSTNAME:-$(tfc_hostname)}"
+HOST="$TFC_HOST"
 command -v curl >/dev/null 2>&1 || {
   sg_err "curl is required for variable-set enrichment"
   exit 1
 }
 JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
 
-# TFC token (same sources as state export): credentials file or TFE_TOKEN.
-creds="$HOME/.terraform.d/credentials.tfrc.json"
-token=""
-[ -f "$creds" ] && token="$("$JQ_BIN" -r --arg h "$HOST" '.credentials[$h].token // empty' "$creds" 2>/dev/null || true)"
-[ -z "$token" ] && token="${TFE_TOKEN:-}"
-if [ -z "$token" ]; then
+# TFC token: same resolution as the tfe provider / state export (lib/tfc_api.sh).
+if [ -z "$(tfc_token "$HOST")" ]; then
   sg_warn "no TFC token (terraform login / TFE_TOKEN); skipping variable-set enrichment"
   exit 0
 fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-AUTH=(-H "Authorization: Bearer $token")
 
-# fetch_all <path> — GET a paginated JSON:API collection, print the merged .data array.
-fetch_all() {
-  local path="$1" page=1 next
-  : >"$WORK/acc.ndjson"
-  while :; do
-    if ! curl -fsS "${AUTH[@]}" "$API/$path?page%5Bsize%5D=100&page%5Bnumber%5D=$page" >"$WORK/page.json"; then
-      sg_err "TFC API request failed: $path"
-      return 1
-    fi
-    "$JQ_BIN" -c '.data[]?' "$WORK/page.json" >>"$WORK/acc.ndjson"
-    next="$("$JQ_BIN" -r '.meta.pagination."next-page" // empty' "$WORK/page.json" 2>/dev/null || true)"
-    [ -z "$next" ] && break
-    page="$next"
-  done
-  "$JQ_BIN" -s '.' "$WORK/acc.ndjson"
-}
+# fetch_all <path> — paginated GET, merged .data array (lib/tfc_api.sh).
+fetch_all() { tfc_get_all "$1"; }
 
 sg_log "fetching workspaces and variable sets from $HOST (org: $ORG)..."
 
@@ -74,7 +60,7 @@ fetch_all "organizations/$ORG/workspaces" |
 sets_raw="$(fetch_all "organizations/$ORG/varsets")" || exit 1
 echo "$sets_raw" | "$JQ_BIN" -c '.[]' | while IFS= read -r s; do
   sid="$(echo "$s" | "$JQ_BIN" -r '.id')"
-  vars="$(curl -fsS "${AUTH[@]}" "$API/varsets/$sid/relationships/vars" 2>/dev/null |
+  vars="$(tfc_http "varsets/$sid/relationships/vars" 2>/dev/null |
     "$JQ_BIN" -c '[.data[]? | {key: .attributes.key, value: (.attributes.value // ""), category: .attributes.category, sensitive: (.attributes.sensitive // false), hcl: (.attributes.hcl // false)}]' 2>/dev/null || echo '[]')"
   echo "$s" | "$JQ_BIN" -c --argjson vars "$vars" '{
     name: .attributes.name,
