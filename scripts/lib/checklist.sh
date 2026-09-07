@@ -7,7 +7,7 @@
 
 SG_UI_URL="${SG_UI_URL:-https://app.stackguardian.io}"
 wf_ui_url() { printf '%s/orchestrator/orgs/%s/wfgrps/%s/wfs/%s' "$SG_UI_URL" "$ORG" "$1" "$2"; }
-secrets_ui_url() { printf '%s/orchestrator/orgs/%s/settings?tab=secrets' "$SG_UI_URL" "$ORG"; }
+secrets_ui_url() { printf '%s/orchestrator/orgs/%s?tab=secrets' "$SG_UI_URL" "$ORG"; }
 
 # secret_name_for <workflow> <var> — SG secret name for a stubbed variable.
 secret_name_for() { printf 'tfc-%s-%s' "$1" "$2" | tr -c 'A-Za-z0-9_-\n' '-' | cut -c1-100; }

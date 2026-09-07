@@ -52,7 +52,7 @@ _tfvars_hcl() { printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" --indent 2 '.
 # hand-editable afterwards.
 #   W_TFORG W_TFHOST W_WSNAMES_JSON W_TAGS_JSON W_IGNORE_TAGS_JSON W_EXPORT_STATE
 #   W_APPROVERS_JSON W_REPO_PREFIX W_VCS_INTEGRATION W_DPC_JSON W_RUNNER_JSON
-#   W_DEST_KIND W_TF_VERSION W_TRIGGERS
+#   W_DEST_KIND W_TF_VERSION W_TRIGGERS W_IGNORE_PATTERNS_JSON
 tfvars_write() {
   local dest="$1" host_line=""
   if [ "${W_TFHOST:-app.terraform.io}" != "app.terraform.io" ]; then
@@ -79,6 +79,10 @@ tfWorkspaceIgnoreTags = $W_IGNORE_TAGS_JSON
 
 # Directory to export Terraform files to
 exportPath = "export"
+
+# TFC/TFE-specific variables that are not migrated (regexes on the variable
+# name), e.g. TFC_WORKSPACE_NAME or TFC_AWS_RUN_ROLE_ARN. [] keeps everything.
+ignoreVarPatterns = $W_IGNORE_PATTERNS_JSON
 
 # Emails of the users who must approve plans (approvalPreApply is set for
 # workspaces without auto-apply)

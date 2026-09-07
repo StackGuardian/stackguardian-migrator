@@ -16,6 +16,8 @@ show_migration_summary() {
 
   _summary_section "$f" '.skippedSensitiveVars' "Sensitive variables skipped (TFC never exposes them)" \
     'to_entries[] | "\(.key): \(.value | join(", "))"' "recreated as SG secrets after import"
+  _summary_section "$f" '.strippedVars' "TFC-specific variables stripped (ignoreVarPatterns)" \
+    'to_entries[] | "\(.key): \(.value | join(", "))"' ""
   _summary_section "$f" '.terraformVersionFallbacks' "Terraform version not pinned (SGDefaultTerraformVersion used)" \
     'to_entries[] | "\(.key): \"\(.value)\""' ""
   _summary_section "$f" '.nonRemoteExecutionModes' "Non-remote execution mode (state may not be in TFC)" \
