@@ -27,20 +27,24 @@ SGDefaultVCSAuthIntegrationID = "/integrations/github_com"
 
 # Integration to use to authenticate against your cloud provider
 SGDefaultDeploymentPlatformConfig = [
-    {
-      "kind" : "AWS_RBAC",
-      "config" : {
-        "integrationId" : "/integrations/aws-dev-account",
-        "profileName" : "default"
-      }
+  {
+    "kind" : "AWS_RBAC",
+    "config" : {
+      "integrationId" : "/integrations/aws-dev-account",
+      "profileName" : "default"
     }
-  ]
+  }
+]
 
 # Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
 SGDefaultSourceConfigDestKind = "GITHUB_COM"
 
 # SG Terraform version used when a workspace's terraform_version is not a pinned
-# semver (e.g. "latest" or a constraint), or runs an engine SG cannot map.
+# semver (e.g. "latest" or a constraint). Pinned versions are carried over as-is;
+# if the SG API rejects one as above the managed ceiling (1.5.7 - the last MPL/
+# FOSS Terraform release; newer versions are BSL and not bundled), the importer
+# re-creates that workflow with this version and logs it in
+# export/terraform-version-fallbacks.log.
 SGDefaultTerraformVersion = "TERRAFORM-1.5.7"
 
 # Pre-configure VCS triggers on each VCS-backed workflow, remapped from the

@@ -79,7 +79,7 @@ variable "SGDefaultSourceConfigDestKind" {
 
 variable "SGDefaultTerraformVersion" {
   default     = "TERRAFORM-1.5.7"
-  description = "SG Terraform version used when a workspace's terraform_version is not a pinned semver (e.g. 'latest' or a version constraint), or the workspace runs an engine SG cannot map. Use the SG-formatted value, e.g. TERRAFORM-1.5.7."
+  description = "SG Terraform version used when a workspace's terraform_version is not a pinned semver (e.g. 'latest' or a version constraint). Also used by the importer when the SG API rejects a pinned version as above the managed ceiling (1.5.7, the last MPL/FOSS release; newer versions are BSL and not bundled). Use the SG-formatted value, e.g. TERRAFORM-1.5.7."
   type        = string
 }
 

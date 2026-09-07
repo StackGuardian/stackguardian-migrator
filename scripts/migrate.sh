@@ -72,7 +72,10 @@ Environment:
 EOF
 }
 
-die() { sg_err "$*"; exit 1; }
+die() {
+  sg_err "$*"
+  exit 1
+}
 
 throttle() { while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$1" ]; do sleep 0.2; done; }
 
@@ -81,12 +84,16 @@ throttle() { while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$1" ]; do sleep 0.2;
 # a non-TTY and don't scatter spinner output across the terminal), then flushed
 # as a clean labeled block in submission order. Returns non-zero if any failed.
 run_parallel() {
-  local fn="$1" max="$2"; shift 2
+  local fn="$1" max="$2"
+  shift 2
   local statusdir i=0 rc=0 item
   statusdir="$(mktemp -d)"
   for item in "$@"; do
     throttle "$max"
-    ( "$fn" "$item" >"$statusdir/$i.out" 2>&1; echo "$?" >"$statusdir/$i.rc" ) &
+    (
+      "$fn" "$item" >"$statusdir/$i.out" 2>&1
+      echo "$?" >"$statusdir/$i.rc"
+    ) &
     i=$((i + 1))
   done
   wait
@@ -108,7 +115,12 @@ payload_files() {
   shopt -u nullglob
 }
 
-seg_of() { local b; b="$(basename "$1")"; b="${b#sg-payload.}"; echo "${b%.json}"; }
+seg_of() {
+  local b
+  b="$(basename "$1")"
+  b="${b#sg-payload.}"
+  echo "${b%.json}"
+}
 
 cmd_init() {
   sg_step "Phase: init"
@@ -122,6 +134,7 @@ cmd_init() {
   sg_log "workflow groups are created automatically as tfc-<project>; no mapping needed"
   sg_success "init complete"
 }
+
 
 # --- StackGuardian API helpers (workflow groups) ---------------------------
 
@@ -170,21 +183,58 @@ do_set_triggers() {
   n="$("$JQ_BIN" 'length' "$f")"
   for ((i = 0; i < n; i++)); do
     if [ "$("$JQ_BIN" -r --argjson i "$i" '(.[$i].VCSTriggers // null) != null' "$f")" != "true" ]; then
-      skip=$((skip + 1)); continue
+      skip=$((skip + 1))
+      continue
     fi
     wf="$("$JQ_BIN" -r --argjson i "$i" '.[$i].ResourceName' "$f")"
+    # A workflow that failed to import has nothing to attach triggers to.
+    if [ "$(sg_http_code GET "$SG_BASE_URL/api/v1/orgs/$ORG/wfgrps/$grp/wfs/$wf/")" != "200" ]; then
+      sg_warn "  $grp/$wf does not exist in SG (import failed?) — skipping triggers"
+      rc=1
+      continue
+    fi
     body="$("$JQ_BIN" -c --argjson i "$i" '{VCSConfig: .[$i].VCSConfig, VCSTriggers: .[$i].VCSTriggers}' "$f")"
-    if sg_retry "$RETRIES" "$RETRY_BASE" -- \
-      curl -fsS -X POST \
-      -H "Authorization: apikey $SG_API_TOKEN" -H "Content-Type: application/json" \
-      -d "$body" "$(wf_triggers_endpoint "$grp" "$wf")" >/dev/null; then
+    if SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- \
+      sg_api_post "$(wf_triggers_endpoint "$grp" "$wf")" "$body"; then
       set=$((set + 1))
     else
-      sg_warn "  vcs triggers failed: $grp/$wf"; rc=1
+      sg_warn "  vcs triggers failed: $grp/$wf"
+      rc=1
     fi
   done
   sg_log "$(basename "$f"): set triggers on $set workflow(s) (skipped $skip without triggers)"
   return "$rc"
+}
+
+# sg_http_code <method> <url> — prints the HTTP status (000 on network error).
+sg_http_code() {
+  curl -sS -o /dev/null -w '%{http_code}' -X "$1" -H "Authorization: apikey $SG_API_TOKEN" "$2" 2>/dev/null || echo 000
+}
+
+# sg_api_post <url> <json-body> — POST to the SG API. Exit 0 on 2xx, 22 on a
+# definitive 4xx (not retryable; response echoed), 1 on 5xx/network (retryable).
+sg_api_post() {
+  local url="$1" body="$2" tmp code
+  tmp="$(mktemp)"
+  code="$(curl -sS -o "$tmp" -w '%{http_code}' -X POST \
+    -H "Authorization: apikey $SG_API_TOKEN" -H "Content-Type: application/json" \
+    -d "$body" "$url" 2>/dev/null || echo 000)"
+  case "$code" in
+  2*)
+    rm -f "$tmp"
+    return 0
+    ;;
+  4*)
+    sg_err "  HTTP $code from ${url#"$SG_BASE_URL"}: $(head -c 400 "$tmp")"
+    rm -f "$tmp"
+    return 22
+    ;;
+  *)
+    sg_warn "  HTTP $code from ${url#"$SG_BASE_URL"}"
+    rm -f "$tmp"
+    return 1
+    ;;
+  esac
 }
 
 # set_triggers_pass — run do_set_triggers over all payload files (assumes
@@ -200,7 +250,8 @@ set_triggers_pass() {
   if run_parallel do_set_triggers "$CONC" "${PF[@]}"; then
     sg_success "vcs triggers registered"
   else
-    sg_err "one or more VCS trigger registrations failed (re-run: $0 triggers)"; return 1
+    sg_err "one or more VCS trigger registrations failed (re-run: $0 triggers)"
+    return 1
   fi
 }
 
@@ -242,22 +293,23 @@ cmd_apply() {
   jqdir="$(dirname "$(sg_resolve jq sg_ensure_jq)")"
 
   if [ "$VERBOSE" -eq 1 ]; then
-    ( cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 \
-        && terraform init -input=false \
-        && terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars ) || rc=$?
+    (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 &&
+      terraform init -input=false &&
+      terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars) || rc=$?
   else
     # Quiet: capture terraform's verbose plan/output; surface only progress, the
     # final summary, and (on failure) the captured log.
     tflog="$(mktemp)"
     sg_log "initializing terraform (providers)..."
-    ( cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 && terraform init -input=false -no-color ) >"$tflog" 2>&1 || rc=$?
+    (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 && terraform init -input=false -no-color) >"$tflog" 2>&1 || rc=$?
     if [ "$rc" -eq 0 ]; then
       sg_log "reading workspaces, generating payloads, exporting state..."
-      ( cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 \
-          && terraform apply -auto-approve -compact-warnings -no-color -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars ) >"$tflog" 2>&1 || rc=$?
+      (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 &&
+        terraform apply -auto-approve -compact-warnings -no-color -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars) >"$tflog" 2>&1 || rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
-      sg_err "terraform failed (rc=$rc):"; cat "$tflog" >&2
+      sg_err "terraform failed (rc=$rc):"
+      cat "$tflog" >&2
     else
       grep -E '^(Apply complete|No changes)' "$tflog" | sed 's/^/  /' >&2 || true
     fi
@@ -293,7 +345,8 @@ cmd_convert() {
   if run_parallel do_convert "$CONC" "${PF[@]}"; then
     sg_success "converted ${#PF[@]} payload(s)"
   else
-    sg_err "conversion failed for one or more payloads"; return 1
+    sg_err "conversion failed for one or more payloads"
+    return 1
   fi
 }
 
@@ -304,17 +357,102 @@ cmd_validate() {
   if "$SCRIPT_DIR/validate_payload.sh" "${PF[@]}"; then
     sg_success "all ${#PF[@]} payload(s) valid"
   else
-    sg_err "validation failed"; return 1
+    sg_err "validation failed"
+    return 1
   fi
 }
 
+# sgcli_bulk <group> <file> <out> — run the bulk create, teeing output to <out>.
+# sg-cli exits 0 even when individual workflows fail, so callers must inspect
+# the output ("Failed to create <name>: ..." lines).
+sgcli_bulk() {
+  "$SGCLI_BIN" workflow create --bulk --workflow-group "$1" --org "$ORG" "$2" 2>&1 | tee "$3"
+  return "${PIPESTATUS[0]}"
+}
+
+# Regex for the API's rejection of a Terraform version above SG's managed
+# ceiling. SG bundles managed runtimes only up to the last MPL-licensed (FOSS)
+# Terraform release; newer versions are BSL and are not shipped.
+TF_CEILING_RE='Failed to create ([^:]+): 400: .*above the highest managed version \(([0-9.]+)\)'
+
+# names_json <name...> — JSON array of the given names (for jq --argjson).
+names_json() { printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
+
+# do_import <payload> — bulk-import one file. Workflows rejected because their
+# Terraform version is above the SG ceiling are re-imported with
+# SG_DEFAULT_TF_VERSION (the payload file is patched in place so re-runs and
+# the trigger pass see what was actually imported); each fallback is appended to
+# terraform-version-fallbacks.log. Any other per-workflow failure fails the file.
 do_import() {
-  local f="$1" seg grp
+  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() name line tmp names
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   sg_log "importing $(basename "$f") -> $grp"
-  sg_retry "$RETRIES" "$RETRY_BASE" -- \
-    "$SGCLI_BIN" workflow create --bulk --workflow-group "$grp" --org "$ORG" "$f"
+  out="$(mktemp)"
+  sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$f" "$out" || rc=1
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ $TF_CEILING_RE ]]; then
+      fb+=("${BASH_REMATCH[1]}")
+      ceiling="${BASH_REMATCH[2]}"
+    elif [[ "$line" =~ Failed\ to\ create\ ([^:]+): ]]; then
+      failed+=("${BASH_REMATCH[1]}")
+    fi
+  done <"$out"
+  rm -f "$out"
+
+  if [ "${#fb[@]}" -gt 0 ]; then
+    sg_warn "${#fb[@]} workflow(s) pinned above SG's managed Terraform ceiling ($ceiling); re-importing with $SG_DEFAULT_TF_VERSION"
+    names="$(names_json "${fb[@]}")"
+    tmp="$(mktemp "$EXPORT_DIR/.fallback.$seg.XXXXXX")"
+    # Patch the affected workflows in the payload and re-import only those.
+    "$JQ_BIN" --arg v "$SG_DEFAULT_TF_VERSION" --argjson names "$names" \
+      'map(if (.ResourceName as $n | $names | index($n)) != null then .TerraformConfig.terraformVersion = $v else . end)' "$f" >"$tmp.full" &&
+      "$JQ_BIN" --argjson names "$names" \
+        'map(select(.ResourceName as $n | $names | index($n) != null))' "$tmp.full" >"$tmp" ||
+      {
+        rm -f "$tmp" "$tmp.full"
+        die "could not patch $(basename "$f") for the Terraform version fallback"
+      }
+    out="$(mktemp)"
+    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$tmp" "$out" || rc=1
+    for name in "${fb[@]}"; do
+      if grep -q "Failed to create $name:" "$out"; then
+        failed+=("$name")
+      else
+        line="$("$JQ_BIN" -r --arg n "$name" '.[] | select(.ResourceName == $n) | .TerraformConfig.terraformVersion' "$f")"
+        printf '%s/%s: %s -> %s (above SG managed ceiling %s)\n' "$grp" "$name" "$line" "$SG_DEFAULT_TF_VERSION" "$ceiling" >>"$EXPORT_DIR/terraform-version-fallbacks.log"
+      fi
+    done
+    rm -f "$out"
+    mv -f "$tmp.full" "$f"
+    rm -f "$tmp"
+  fi
+
+  if [ "${#failed[@]}" -gt 0 ]; then
+    sg_err "$(basename "$f"): ${#failed[@]} workflow(s) failed to import: ${failed[*]}"
+    return 1
+  fi
+  return "$rc"
+}
+
+# Print the customer-facing notice when any workflow fell back to the default
+# Terraform version during this import.
+tf_fallback_notice() {
+  local log="$EXPORT_DIR/terraform-version-fallbacks.log"
+  [ -s "$log" ] || return 0
+  sg_warn "Terraform version fallback applied to $(wc -l <"$log" | tr -d ' ') workflow(s):"
+  sed 's/^/  /' "$log" >&2
+  cat >&2 <<NOTICE
+  StackGuardian ships managed Terraform runtimes only up to the last MPL-licensed
+  (FOSS) release; newer versions are BSL-licensed and are not bundled. The
+  workflows above were created with $SG_DEFAULT_TF_VERSION instead of the version
+  pinned in TFC, so they will run a different Terraform than before - verify the
+  configuration is compatible before the first run. To keep a newer version, set
+  workspaceOverrides[<name>].terraformVersion to a binary path mounted from a
+  private runner, or use a custom runtime container template
+  (wfStepTemplateRevisionId), and re-import.
+NOTICE
 }
 
 cmd_import() {
@@ -340,23 +478,32 @@ cmd_import() {
     count="$("$JQ_BIN" 'length' "$f")"
     override=""
     [ -f "$MAPPING" ] && override="$("$JQ_BIN" -r --arg k "$seg" '.[$k] // empty' "$MAPPING" 2>/dev/null || true)"
-    if [ -n "$override" ]; then grp="$override"; is_override=1; else grp="tfc-$seg"; is_override=0; fi
+    if [ -n "$override" ]; then
+      grp="$override"
+      is_override=1
+    else
+      grp="tfc-$seg"
+      is_override=0
+    fi
 
     code="$(wfgroup_http_code "$grp")"
     case "$code" in
-      200) status="${C_GREEN}exists${C_RESET}" ;;
-      404)
-        if [ "$is_override" -eq 1 ]; then
-          status="${C_RED}missing!${C_RESET}"; fail=1
-        elif [ "$CREATE_GROUPS" -eq 1 ]; then
-          status="${C_YELLOW}create${C_RESET}"
-          case "$to_create" in *" $grp "*) ;; *) to_create="$to_create$grp " ;; esac
-        else
-          status="${C_RED}missing!${C_RESET}"; fail=1
-        fi ;;
-      401 | 403) die "auth failed (HTTP $code) for org '$ORG' — check SG_API_TOKEN" ;;
-      000) die "could not reach $SG_BASE_URL" ;;
-      *) die "unexpected HTTP $code checking group '$grp'" ;;
+    200) status="${C_GREEN}exists${C_RESET}" ;;
+    404)
+      if [ "$is_override" -eq 1 ]; then
+        status="${C_RED}missing!${C_RESET}"
+        fail=1
+      elif [ "$CREATE_GROUPS" -eq 1 ]; then
+        status="${C_YELLOW}create${C_RESET}"
+        case "$to_create" in *" $grp "*) ;; *) to_create="$to_create$grp " ;; esac
+      else
+        status="${C_RED}missing!${C_RESET}"
+        fail=1
+      fi
+      ;;
+    401 | 403) die "auth failed (HTTP $code) for org '$ORG' — check SG_API_TOKEN" ;;
+    000) die "could not reach $SG_BASE_URL" ;;
+    *) die "unexpected HTTP $code checking group '$grp'" ;;
     esac
     printf '  %-34s %-26s %-9s %s\n' "$(basename "$f")" "$grp" "$count" "$status" >&2
   done
@@ -377,40 +524,72 @@ cmd_import() {
   done
 
   SGCLI_BIN="$(sg_resolve sg-cli sg_ensure_sgcli)"
+  # Fallback Terraform version for workflows the API rejects as above the
+  # managed ceiling: SGDefaultTerraformVersion from terraform.tfvars, else 1.5.7.
+  SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-}"
+  if [ -z "$SG_DEFAULT_TF_VERSION" ] && [ -f "$TFVARS" ]; then
+    SG_DEFAULT_TF_VERSION="$("$(sg_resolve hcl2json sg_ensure_hcl2json)" "$TFVARS" | "$JQ_BIN" -r '.SGDefaultTerraformVersion // empty')"
+  fi
+  SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-TERRAFORM-1.5.7}"
+  rm -f "$EXPORT_DIR/terraform-version-fallbacks.log"
+
   sg_log "importing ${#PF[@]} payload(s), up to $CONC in parallel (retries: $RETRIES)"
-  if run_parallel do_import "$CONC" "${PF[@]}"; then
+  local import_rc=0
+  run_parallel do_import "$CONC" "${PF[@]}" || import_rc=1
+  tf_fallback_notice
+  if [ "$import_rc" -eq 0 ]; then
     sg_success "import complete (${#PF[@]} payload(s))"
   else
-    sg_err "one or more imports failed"; return 1
+    sg_err "one or more workflows failed to import (see above); VCS triggers are still registered for the ones that succeeded"
   fi
 
   # VCS triggers are not accepted by the bulk create API; register them in a
   # second pass against the dedicated webhooks endpoint (skip with --no-vcs-triggers).
   if [ "$VCS_TRIGGERS" -eq 1 ]; then
-    set_triggers_pass
+    set_triggers_pass || import_rc=1
   fi
+  return "$import_rc"
 }
 
 CMD=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -y | --yes) ASSUME_YES=1 ;;
-    --org) ORG="$2"; shift ;;
-    --org=*) ORG="${1#*=}" ;;
-    --export-dir) EXPORT_DIR="$2"; shift ;;
-    --export-dir=*) EXPORT_DIR="${1#*=}" ;;
-    --mapping) MAPPING="$2"; shift ;;
-    --mapping=*) MAPPING="${1#*=}" ;;
-    --concurrency) CONC="$2"; shift ;;
-    --concurrency=*) CONC="${1#*=}" ;;
-    --no-create-groups) CREATE_GROUPS=0 ;;
-    --no-variable-sets) ENRICH_VARSETS=0 ;;
-    --no-vcs-triggers) VCS_TRIGGERS=0 ;;
-    -v | --verbose) VERBOSE=1 ;;
-    --all) PURGE=1 ;;
-    -h | --help) usage; exit 0 ;;
-    init | apply | enrich | convert | validate | import | triggers | all | clean) CMD="$1" ;;
-    *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
+  -y | --yes) ASSUME_YES=1 ;;
+  --org)
+    ORG="$2"
+    shift
+    ;;
+  --org=*) ORG="${1#*=}" ;;
+  --export-dir)
+    EXPORT_DIR="$2"
+    shift
+    ;;
+  --export-dir=*) EXPORT_DIR="${1#*=}" ;;
+  --mapping)
+    MAPPING="$2"
+    shift
+    ;;
+  --mapping=*) MAPPING="${1#*=}" ;;
+  --concurrency)
+    CONC="$2"
+    shift
+    ;;
+  --concurrency=*) CONC="${1#*=}" ;;
+  --no-create-groups) CREATE_GROUPS=0 ;;
+  --no-variable-sets) ENRICH_VARSETS=0 ;;
+  --no-vcs-triggers) VCS_TRIGGERS=0 ;;
+  -v | --verbose) VERBOSE=1 ;;
+  --all) PURGE=1 ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  init | apply | enrich | convert | validate | import | triggers | all | clean) CMD="$1" ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    usage
+    exit 1
+    ;;
   esac
   shift
 done
@@ -418,26 +597,26 @@ CMD="${CMD:-all}"
 export SG_VERBOSE="$VERBOSE"
 
 case "$CMD" in
-  init) cmd_init ;;
-  clean) cmd_clean ;;
-  apply) cmd_apply ;;
-  enrich) cmd_enrich ;;
-  convert) cmd_convert ;;
-  validate) cmd_validate ;;
-  import) cmd_import ;;
-  triggers) cmd_triggers ;;
-  all)
-    if [ ! -f "$TFVARS" ]; then
-      cmd_init
-      die "Edit $(sg_rel "$TFVARS"), then re-run '$0 all'."
-    fi
-    # Fail fast on import prerequisites before the (long) apply.
-    [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set (needed for import)."
-    [ -n "$ORG" ] || die "StackGuardian org not set (use --org or SG_ORG)."
-    cmd_apply
-    if [ "$ENRICH_VARSETS" -eq 1 ]; then cmd_enrich; fi
-    cmd_convert
-    cmd_validate
-    cmd_import
-    ;;
+init) cmd_init ;;
+clean) cmd_clean ;;
+apply) cmd_apply ;;
+enrich) cmd_enrich ;;
+convert) cmd_convert ;;
+validate) cmd_validate ;;
+import) cmd_import ;;
+triggers) cmd_triggers ;;
+all)
+  if [ ! -f "$TFVARS" ]; then
+    cmd_init
+    die "Edit $(sg_rel "$TFVARS"), then re-run '$0 all'."
+  fi
+  # Fail fast on import prerequisites before the (long) apply.
+  [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set (needed for import)."
+  [ -n "$ORG" ] || die "StackGuardian org not set (use --org or SG_ORG)."
+  cmd_apply
+  if [ "$ENRICH_VARSETS" -eq 1 ]; then cmd_enrich; fi
+  cmd_convert
+  cmd_validate
+  cmd_import
+  ;;
 esac
