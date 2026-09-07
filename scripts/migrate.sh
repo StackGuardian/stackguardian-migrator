@@ -17,6 +17,8 @@ source "$SCRIPT_DIR/lib/tfvars.sh"
 source "$SCRIPT_DIR/lib/tfc_api.sh"
 # shellcheck source=lib/sg_api.sh
 source "$SCRIPT_DIR/lib/sg_api.sh"
+# shellcheck source=lib/wizard.sh
+source "$SCRIPT_DIR/lib/wizard.sh"
 
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
@@ -136,13 +138,27 @@ seg_of() {
 cmd_init() {
   sg_step "Phase: init"
   mkdir -p "$SG_REPO_ROOT/.sg" "$SG_CACHE_BIN"
-  if [ ! -f "$TFVARS" ]; then
-    cp "$TRANSFORMER_DIR/terraform.tfvars.example" "$TFVARS"
-    sg_log "created $(sg_rel "$TFVARS") — edit it before 'apply'"
+  if ! sg_interactive; then
+    # Non-interactive (CI, no TTY, -y): fall back to the template.
+    if [ ! -f "$TFVARS" ]; then
+      cp "$TRANSFORMER_DIR/terraform.tfvars.example" "$TFVARS"
+      sg_log "created $(sg_rel "$TFVARS") from the template — edit it before 'apply' (run 'init' in a terminal for the guided setup)"
+    else
+      sg_log "$(sg_rel "$TFVARS") already exists"
+    fi
   else
-    sg_log "$(sg_rel "$TFVARS") already exists"
+    if [ -f "$TFVARS" ]; then
+      case "$(sg_select "$(sg_rel "$TFVARS") already exists"         "keep|leave it unchanged"         "rerun|run the wizard again (current values become the defaults; a .bak copy is kept)")" in
+      keep) sg_log "keeping $(sg_rel "$TFVARS")" ;;
+      rerun) wizard_run || return 1 ;;
+      esac
+    else
+      sg_log "answer a few questions to generate $(sg_rel "$TFVARS"); tokens are read from the environment and never written to disk"
+      wizard_run || return 1
+    fi
   fi
   sg_log "workflow groups are created automatically as tfc-<project>; no mapping needed"
+  sg_log "next: ./sg-migrate.sh all"
   completion_hint
   sg_success "init complete"
 }
