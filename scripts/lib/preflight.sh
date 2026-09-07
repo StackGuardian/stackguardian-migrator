@@ -190,6 +190,11 @@ preflight_run() {
   PF_FAIL=0
   PF_WARN=0
   PF_TFC_WORKSPACES=""
+  local parse_err
+  if ! parse_err="$(tfvars_valid)"; then
+    pf_fail "$(sg_rel "$TFVARS") is not valid HCL: ${parse_err:-parse error}"
+    die "fix the file (or re-run '$PROG init') and try again."
+  fi
   case "$ctx" in
   apply)
     preflight_tfc

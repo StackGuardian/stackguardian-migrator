@@ -10,9 +10,11 @@ _w_default() { local v; v="$(tfvars_get "$1")"; printf '%s' "${v:-$2}"; }
 
 # _w_csv_json <csv> — "a, b" -> ["a","b"]; empty -> [].
 _w_csv_json() {
-  local jqb
+  local jqb out
   jqb="$(sg_resolve jq sg_ensure_jq)"
-  printf '%s' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' | "$jqb" -R . | "$jqb" -sc . 2>/dev/null || echo '[]'
+  # (grep -v exits 1 on empty input; never let that trigger the fallback twice)
+  out="$(printf '%s' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | { grep -v '^$' || true; } | "$jqb" -R . | "$jqb" -sc . 2>/dev/null)"
+  printf '%s' "${out:-[]}"
 }
 
 # _w_repo_prefix_for <sourceConfigDestKind> — proposed repo URL prefix.
@@ -226,5 +228,12 @@ wizard_run() {
     sg_log "previous file kept as $(sg_rel "$TFVARS.bak")"
   fi
   tfvars_write "$TFVARS"
+  if ! tfvars_valid; then
+    sg_err "the generated $(sg_rel "$TFVARS") is not valid HCL — this is a bug in the wizard; the file was kept for inspection"
+    return 1
+  fi
+  # Remember the SG org (and API host) for later phases, so users don't have to
+  # export SG_ORG again in a new shell. Tokens are never stored.
+  state_update '.config = ((.config // {}) + {sg_org: $o, sg_base_url: $u})' --arg o "$ORG" --arg u "$SG_BASE_URL"
   sg_success "wrote $(sg_rel "$TFVARS")"
 }

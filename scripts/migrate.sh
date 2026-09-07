@@ -30,6 +30,7 @@ source "$SCRIPT_DIR/lib/errors.sh"
 # shellcheck source=lib/checklist.sh
 source "$SCRIPT_DIR/lib/checklist.sh"
 
+
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
 TRANSFORMER_DIR="$SG_REPO_ROOT/transformer/terraform-cloud"
@@ -38,6 +39,7 @@ PROG="${SG_PROG:-$0}"
 EXPORT_DIR="${SG_EXPORT_DIR:-$SG_REPO_ROOT/export}"
 MAPPING="${SG_WFGROUP_MAP:-$SG_REPO_ROOT/.sg/workflow-groups.json}"
 ORG="${SG_ORG:-}"
+SG_BASE_URL_SET="${SG_BASE_URL:-}"
 SG_BASE_URL="${SG_BASE_URL:-https://api.app.stackguardian.io}"
 ASSUME_YES=0
 PURGE=0
@@ -59,6 +61,13 @@ TF_PARALLELISM="${SG_TF_PARALLELISM:-20}"
 RETRIES="${SG_RETRIES:-4}"
 RETRY_BASE="${SG_RETRY_BASE:-2}"
 PF=()
+# The init wizard remembers the SG org / API host in .sg/state.json so a new
+# shell without SG_ORG still works; flags and env always win.
+if [ -z "$ORG" ] && [ -f "$STATE_FILE" ]; then
+  ORG="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r '.config.sg_org // empty' 2>/dev/null || true)"
+  [ -n "$ORG" ] && [ -z "${SG_BASE_URL_SET:-}" ] && SG_BASE_URL="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r --arg d "$SG_BASE_URL" '.config.sg_base_url // $d' 2>/dev/null || echo "$SG_BASE_URL")"
+fi
+
 
 usage() {
   cat >&2 <<EOF
