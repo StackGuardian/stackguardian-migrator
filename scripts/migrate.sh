@@ -25,6 +25,8 @@ source "$SCRIPT_DIR/lib/preflight.sh"
 source "$SCRIPT_DIR/lib/state.sh"
 # shellcheck source=lib/report.sh
 source "$SCRIPT_DIR/lib/report.sh"
+# shellcheck source=lib/errors.sh
+source "$SCRIPT_DIR/lib/errors.sh"
 
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
@@ -461,6 +463,9 @@ do_import() {
     if [[ "$line" =~ $TF_CEILING_RE ]]; then
       fb+=("${BASH_REMATCH[1]}")
       ceiling="${BASH_REMATCH[2]}"
+    elif [[ "$line" =~ Failed\ to\ create\ ([^:]+):\ [0-9]+:\ (.*)$ ]]; then
+      failed+=("${BASH_REMATCH[1]}")
+      explain_api_error "${BASH_REMATCH[2]}"
     elif [[ "$line" =~ Failed\ to\ create\ ([^:]+): ]]; then
       failed+=("${BASH_REMATCH[1]}")
     fi
