@@ -140,7 +140,8 @@ wizard_sg() {
   GITHUB_COM | GITLAB_COM | BITBUCKET_ORG | AZURE_DEVOPS | GIT_OTHER) W_DEST_KIND="$kind" ;;
   *) W_DEST_KIND="$(sg_select "VCS provider kind" GITHUB_COM GITLAB_COM BITBUCKET_ORG AZURE_DEVOPS GIT_OTHER)" || return 1 ;;
   esac
-  W_REPO_PREFIX="$(sg_ask "Repository URL prefix" "$(_w_default .SGDefaultIACVCSRepoPrefix "$(_w_repo_prefix_for "$W_DEST_KIND")")")" || return 1
+  # Repo URL prefix follows the connector kind; editable in terraform.tfvars.
+  W_REPO_PREFIX="$(_w_default .SGDefaultIACVCSRepoPrefix "$(_w_repo_prefix_for "$W_DEST_KIND")")"
 
   # Cloud connector -> DeploymentPlatformConfig.
   cloud=""
@@ -154,12 +155,11 @@ wizard_sg() {
     kind=""
   fi
   if [ -z "$pick" ] || [ "$pick" = "skip" ]; then
-    W_DPC_JSON='[{"kind":"AWS_RBAC","config":{"integrationId":"/integrations/CHANGE_ME","profileName":"default"}}]'
+    W_DPC_JSON='[{"kind":"AWS_RBAC","config":{"integrationId":"/integrations/CHANGE_ME"}}]'
     W_DPC_PLACEHOLDER=1
   else
     [ -n "$kind" ] || kind="$(sg_select "Connector kind" AWS_RBAC AWS_STATIC AWS_OIDC AZURE_STATIC AZURE_OIDC AZURE_MANAGED_ID_OIDC GCP_STATIC GCP_OIDC)" || return 1
-    name="$(sg_ask "Profile name" "$(_w_default .SGDefaultDeploymentPlatformConfig[0].config.profileName default)")" || return 1
-    W_DPC_JSON="$("$jqb" -nc --arg k "$kind" --arg i "/integrations/${pick#/integrations/}" --arg p "$name" '[{kind:$k, config:{integrationId:$i, profileName:$p}}]')"
+    W_DPC_JSON="$("$jqb" -nc --arg k "$kind" --arg i "/integrations/${pick#/integrations/}" '[{kind:$k, config:{integrationId:$i}}]')"
     W_DPC_PLACEHOLDER=0
   fi
 
@@ -187,19 +187,14 @@ wizard_sg() {
 
 # --- step 3: policy ------------------------------------------------------------
 wizard_policy() {
-  local approvers
   sg_step "3/4 Workflow defaults"
-  approvers="$(sg_ask "Approver emails for plans (comma-separated, empty for none)" "$(tfvars_get_json .SGDefaultWfApprovers | "$(sg_resolve jq sg_ensure_jq)" -r 'if . == null then "" else join(", ") end')")" || return 1
-  W_APPROVERS_JSON="$(_w_csv_json "$approvers")"
+  # Approvers, repo prefix and the fallback Terraform version are plain values
+  # with sensible defaults — edit them in terraform.tfvars if needed.
+  W_APPROVERS_JSON="$(tfvars_get_json .SGDefaultWfApprovers)"
+  [ "$W_APPROVERS_JSON" = "null" ] && W_APPROVERS_JSON='[]'
+  W_TF_VERSION="$(_w_default .SGDefaultTerraformVersion TERRAFORM-1.5.7)"
   if sg_confirm "Export Terraform state for each workspace?" "$([ "$(_w_default .exportStateFiles true)" = "false" ] && echo N || echo Y)"; then W_EXPORT_STATE=true; else W_EXPORT_STATE=false; fi
   if sg_confirm "Pre-configure VCS triggers (push / pull-request runs) from the TFC settings?" "$([ "$(_w_default .SGDefaultEnableVCSTriggers true)" = "false" ] && echo N || echo Y)"; then W_TRIGGERS=true; else W_TRIGGERS=false; fi
-  sg_dim "StackGuardian bundles managed Terraform only up to 1.5.7 (last MPL/FOSS release);"
-  sg_dim "workspaces pinned above it are imported with the fallback version below."
-  while :; do
-    W_TF_VERSION="$(sg_ask "Fallback Terraform version" "$(_w_default .SGDefaultTerraformVersion TERRAFORM-1.5.7)")" || return 1
-    [[ "$W_TF_VERSION" =~ ^TERRAFORM-[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
-    sg_warn "use the SG format, e.g. TERRAFORM-1.5.7"
-  done
 }
 
 # --- step 4: review + write ----------------------------------------------------
@@ -212,10 +207,10 @@ wizard_review() {
   row "VCS connector" "$W_VCS_INTEGRATION ($W_DEST_KIND, $W_REPO_PREFIX)"
   row "Cloud connector" "$W_DPC_JSON"
   row "Runners" "$W_RUNNER_JSON"
-  row "Approvers" "$W_APPROVERS_JSON"
   row "State export / triggers" "$W_EXPORT_STATE / $W_TRIGGERS"
-  row "Fallback Terraform" "$W_TF_VERSION${W_WS_ABOVE_CEILING:+  ($W_WS_ABOVE_CEILING workspace(s) above 1.5.7 will use it)}"
+  row "Fallback Terraform" "$W_TF_VERSION${W_WS_ABOVE_CEILING:+  ($W_WS_ABOVE_CEILING workspace(s) pinned above 1.5.7 (the last FOSS runtime SG bundles) will use it)}"
   [ "${W_DPC_PLACEHOLDER:-0}" -eq 1 ] && sg_warn "cloud connector left as a placeholder — edit SGDefaultDeploymentPlatformConfig in $(sg_rel "$TFVARS") before 'apply'"
+  sg_dim "approvers, repo URL prefix and the fallback version can be edited in $(sg_rel "$TFVARS")"
   sg_confirm "Write $(sg_rel "$TFVARS")?" Y
 }
 
