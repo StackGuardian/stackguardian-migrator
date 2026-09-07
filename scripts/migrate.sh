@@ -294,16 +294,46 @@ cmd_clean() {
   sg_success "clean complete"
 }
 
-# require_tfc_auth — fail fast with a clear message when no TFC/TFE credential
-# is available for the tfe provider. Accepted: TFE_TOKEN, any TF_TOKEN_* var
-# (terraform's per-host token env), or the `terraform login` credentials file.
-# Without this, terraform fails later with a confusing "Invalid provider
-# configuration" error.
+# tfc_hostname — TFC/TFE host from terraform.tfvars (tfHostname), default app.terraform.io.
+tfc_hostname() {
+  local h=""
+  if [ -f "$TFVARS" ]; then
+    h="$("$(sg_resolve hcl2json sg_ensure_hcl2json)" "$TFVARS" 2>/dev/null | "$(sg_resolve jq sg_ensure_jq)" -r '.tfHostname // empty' 2>/dev/null || true)"
+  fi
+  echo "${h:-app.terraform.io}"
+}
+
+# tfc_token <host> — resolve the TFC/TFE token the tfe provider will use, in
+# terraform's own precedence: TFE_TOKEN, TF_TOKEN_<host> ('.'->'_', '-'->'__'),
+# then the `terraform login` credentials file. Prints nothing if none is set.
+tfc_token() {
+  local host="$1" var creds
+  if [ -n "${TFE_TOKEN:-}" ]; then echo "$TFE_TOKEN"; return; fi
+  var="TF_TOKEN_$(echo "$host" | sed 's/-/__/g; s/\./_/g')"
+  if [ -n "${!var:-}" ]; then echo "${!var}"; return; fi
+  creds="$HOME/.terraform.d/credentials.tfrc.json"
+  [ -f "$creds" ] && "$(sg_resolve jq sg_ensure_jq)" -r --arg h "$host" '.credentials[$h].token // empty' "$creds" 2>/dev/null || true
+}
+
+# require_tfc_auth — fail fast, before the (long) apply, when the tfe provider
+# would not be able to authenticate: no credential at all, or a credential
+# that TFC/TFE rejects (e.g. an expired `terraform login` session). Verified
+# with GET /api/v2/account/details. Without this, terraform fails later with a
+# confusing "Invalid provider configuration" error.
 require_tfc_auth() {
-  [ -n "${TFE_TOKEN:-}" ] && return 0
-  if env | grep -q '^TF_TOKEN_'; then return 0; fi
-  [ -f "$HOME/.terraform.d/credentials.tfrc.json" ] && return 0
-  die "no Terraform Cloud/Enterprise credentials found. Set TFE_TOKEN=<long-lived API token> (recommended) or run 'terraform login' before '$PROG apply'."
+  local host token code src
+  host="$(tfc_hostname)"
+  token="$(tfc_token "$host")"
+  if [ -n "${TFE_TOKEN:-}" ]; then src="TFE_TOKEN"; elif env | grep -q '^TF_TOKEN_'; then src="the TF_TOKEN_* variable"; else src="the 'terraform login' session (likely expired)"; fi
+  [ -n "$token" ] || die "no Terraform Cloud/Enterprise credentials found for $host. Set TFE_TOKEN=<long-lived API token> (recommended) or run 'terraform login' before '$PROG apply'."
+  command -v curl >/dev/null 2>&1 || return 0
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "https://$host/api/v2/account/details" 2>/dev/null || echo 000)"
+  case "$code" in
+    200) sg_log "TFC/TFE credentials verified ($host)" ;;
+    401 | 403) die "Terraform Cloud/Enterprise rejected $src for $host (HTTP $code). Set TFE_TOKEN=<long-lived API token> or re-run 'terraform login'." ;;
+    000) die "could not reach https://$host to verify TFC/TFE credentials (network/proxy?)" ;;
+    *) sg_warn "unexpected HTTP $code verifying TFC/TFE credentials at $host; continuing" ;;
+  esac
 }
 
 cmd_apply() {
