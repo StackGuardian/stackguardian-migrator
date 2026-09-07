@@ -67,7 +67,11 @@ if [ -n "${TFE_TOKEN:-}" ]; then
 elif [ -f "$CREDS" ]; then
   DOCKER_ARGS+=(-v "$CREDS:/root/.terraform.d/credentials.tfrc.json:ro")
 else
-  sg_warn "no TFC auth found — set TFE_TOKEN (long-lived API token) or run 'terraform login'"
+  # Only apply/all need TFC auth; migrate.sh fails fast there with a clear message.
+  case " ${ARGS[*]-} " in *" apply "* | *" all "*)
+    sg_err "no Terraform Cloud/Enterprise credentials found. Set TFE_TOKEN=<long-lived API token> (recommended) or run 'terraform login' first."
+    exit 1 ;;
+  esac
 fi
 
 # Forward any TF_TOKEN_* env vars (alternative TFC/TFE auth) if present.
