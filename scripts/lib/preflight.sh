@@ -63,6 +63,7 @@ preflight_tfc() {
   else
     pf_warn "could not list workspaces for '$org' (HTTP $TFC_HTTP_CODE)"
   fi
+  return 0
 }
 
 # --- StackGuardian ------------------------------------------------------------
@@ -123,7 +124,8 @@ preflight_sg() {
         ((.workspaceOverrides // {}) | to_entries[]? | .value.RunnerConstraints // {} | select(.type == "private") | .names[]?) ]
       | unique | .[]')
   n="$(tfvars_json | "$jqb" -r '(.SGDefaultRunnerConstraints // {}).type // "shared"')"
-  [ "$n" = "shared" ] && pf_ok "runners: StackGuardian shared runners"
+  if [ "$n" = "shared" ]; then pf_ok "runners: StackGuardian shared runners"; fi
+  return 0
 }
 
 # --- static config --------------------------------------------------------------
@@ -162,6 +164,7 @@ preflight_config() {
       fi
     done < <(tfvars_json | "$jqb" -r '(.workspaceOverrides // {}) | keys[]')
   fi
+  return 0
 }
 
 # --- import inputs --------------------------------------------------------------
@@ -173,6 +176,7 @@ preflight_import_inputs() {
     pf_fail "no payload files in $(sg_rel "$EXPORT_DIR") — run '$PROG apply' first"
   fi
   if sg_resolve sg-cli sg_ensure_sgcli >/dev/null 2>&1; then pf_ok "sg-cli available"; else pf_fail "sg-cli not found and could not be downloaded"; fi
+  return 0
 }
 
 # preflight_run <apply|import|all> — run the checks for a context; dies on
