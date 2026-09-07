@@ -89,6 +89,65 @@ sg_list_workflows() {
 # sg_patch_workflow <group> <wf> <json> — PATCH a workflow.
 sg_patch_workflow() { sg_api_patch "$(wf_url "$1" "$2")" "$3"; }
 
+# --- execution preset (org workflow defaults) ------------------------------
+# Settings -> Runner groups -> Execution presets is stored as the org's
+# Settings.workflowDefaults: RunnerConstraints plus a TerraformConfig each for
+# TERRAFORM and OPENTOFU workflows (terraformVersion, optional terraformBinPath /
+# wfStepTemplateRevisionId). At workflow creation the API fills those keys from
+# it when the payload does not carry them.
+
+# sg_execution_preset — the preset as compact JSON; "{}" when the org has none.
+# Exit 1 when the org could not be read (the caller decides how loud to be).
+sg_execution_preset() {
+  local body out
+  body="$(sg_api_get "$(sg_org_url)/" 2>/dev/null)" || { printf '{}'; return 1; }
+  out="$(printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '(.msg // .data // {}) | (.Settings // {}).workflowDefaults // {}' 2>/dev/null)"
+  [ -n "$out" ] || out='{}'
+  printf '%s' "$out"
+}
+
+# sg_preset_runner_desc <preset-json> — "shared runners" / "private runner group X".
+sg_preset_runner_desc() {
+  local p="${1:-}"
+  [ -n "$p" ] || p='{}'
+  printf '%s' "$p" | "$(sg_resolve jq sg_ensure_jq)" -r '
+    (.RunnerConstraints // {}) as $r
+    | if ($r.type // "shared") == "private" then "private runner group \(($r.names // []) | join(", "))" else "shared runners" end' 2>/dev/null
+}
+
+# sg_preset_version_desc <preset-json> [TERRAFORM|OPENTOFU] — e.g. "Terraform 1.5.7",
+# "Terraform 1.5.7 with runtime image /org/img:3", "runner-provided binary /usr/bin/terraform",
+# or "managed Terraform 1.5.7 (platform default)" when the preset has no version.
+sg_preset_version_desc() {
+  local p="${1:-}"
+  [ -n "$p" ] || p='{}'
+  printf '%s' "$p" | "$(sg_resolve jq sg_ensure_jq)" -r --arg t "${2:-TERRAFORM}" '
+    (if $t == "OPENTOFU" then "OpenTofu" else "Terraform" end) as $tool
+    | ((if $t == "OPENTOFU" then .openTofuDefaults else .terraformDefaults end // {}).TerraformConfig // {}) as $c
+    | (if (($c.terraformBinPath // []) | length) > 0 then "runner-provided binary \($c.terraformBinPath[0].source // "")"
+       elif ($c.terraformVersion // "") == "" then (if $t == "OPENTOFU" then "managed OpenTofu (platform default)" else "managed Terraform 1.5.7 (platform default)" end)
+       else "\($tool) \($c.terraformVersion | ltrimstr("TERRAFORM-") | ltrimstr("OPENTOFU-"))" end)
+      + (if ($c.wfStepTemplateRevisionId // "") != "" then " with runtime image \($c.wfStepTemplateRevisionId)" else "" end)' 2>/dev/null
+}
+
+# sg_preset_desc <preset-json> — one line: "Terraform 1.5.7 on shared runners";
+# "none configured (platform defaults: managed Terraform 1.5.7 on shared runners)" for {}.
+sg_preset_desc() {
+  if [ -z "$1" ] || [ "$1" = "{}" ] || [ "$1" = "null" ]; then
+    printf 'none configured (platform defaults: managed Terraform 1.5.7 on shared runners)'
+  else
+    printf '%s on %s' "$(sg_preset_version_desc "$1")" "$(sg_preset_runner_desc "$1")"
+  fi
+}
+
+# sg_preset_runner_provided <preset-json> — exit 0 when the Terraform defaults
+# mount a runner-provided binary (terraformBinPath).
+sg_preset_runner_provided() {
+  local p="${1:-}"
+  [ -n "$p" ] || p='{}'
+  printf '%s' "$p" | "$(sg_resolve jq sg_ensure_jq)" -e '((.terraformDefaults // {}).TerraformConfig.terraformBinPath // []) | length > 0' >/dev/null 2>&1
+}
+
 # --- integrations (connectors) --------------------------------------------
 
 # sg_list_integrations — [{name, type}, ...] for the org (fails on error).
@@ -97,6 +156,25 @@ sg_list_integrations() {
   local body
   body="$(sg_api_get "$(sg_org_url)/integrations/listall/")" || return $?
   printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | {name: (.ResourceName // .Id // ""), type: (.Settings.kind // .kind // .ResourceType // "")}] | map(select(.name != ""))'
+}
+
+# sg_vcs_kind_of <connector-type> — the sourceConfigDestKind a VCS connector
+# type implies (GITHUB_APP_CUSTOM -> GITHUB_COM, AZURE_DEVOPS_SP -> AZURE_DEVOPS,
+# ...); empty for cloud connectors and unknown types.
+sg_vcs_kind_of() {
+  case "$1" in
+  GITHUB_COM | GITHUB_APP_CUSTOM) printf 'GITHUB_COM' ;;
+  GITLAB_COM | GITLAB_OAUTH_SSH) printf 'GITLAB_COM' ;;
+  BITBUCKET_ORG) printf 'BITBUCKET_ORG' ;;
+  AZURE_DEVOPS | AZURE_DEVOPS_SP) printf 'AZURE_DEVOPS' ;;
+  GIT_OTHER) printf 'GIT_OTHER' ;;
+  *) printf '' ;;
+  esac
+}
+
+# sg_integration_type <integrations-json> <name> — the connector's kind, or empty.
+sg_integration_type() {
+  printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" -r --arg n "${2#/integrations/}" '[.[] | select(.name == $n) | .type][0] // empty'
 }
 
 # sg_integration_exists <name-or-/integrations/name> — exit 0 when it exists.

@@ -78,10 +78,67 @@ tfc_list_orgs() { tfc_get_all "organizations" | "$(sg_resolve jq sg_ensure_jq)" 
 # tfc_list_projects <org> — [{id, name}, ...]
 tfc_list_projects() { tfc_get_all "organizations/$1/projects" | "$(sg_resolve jq sg_ensure_jq)" -c '[.[] | {id: .id, name: .attributes.name}]'; }
 
-# tfc_list_workspaces <org> — [{name, id, project, tags, terraform_version, execution_mode}, ...]
+# tfc_list_workspaces <org> — [{name, id, project, tags, terraform_version,
+# execution_mode, vcs_provider, vcs_url, vcs_identifier}, ...]. The vcs_* fields
+# are empty for CLI-driven workspaces (no VCS connection).
 tfc_list_workspaces() {
   tfc_get_all "organizations/$1/workspaces" | "$(sg_resolve jq sg_ensure_jq)" -c \
-    '[.[] | {name: .attributes.name, id: .id, project: (.relationships.project.data.id // ""), tags: (.attributes."tag-names" // []), terraform_version: .attributes."terraform-version", execution_mode: .attributes."execution-mode"}]'
+    '[.[] | {name: .attributes.name, id: .id, project: (.relationships.project.data.id // ""), tags: (.attributes."tag-names" // []), terraform_version: .attributes."terraform-version", execution_mode: .attributes."execution-mode",
+             vcs_provider: (.attributes."vcs-repo"."service-provider" // ""), vcs_url: (.attributes."vcs-repo"."repository-http-url" // ""), vcs_identifier: (.attributes."vcs-repo".identifier // "")}]'
+}
+
+# tfc_select_workspaces <workspaces-json> <names-json> <tags-json> <ignore-json>
+# — the subset the transformer exports, mirroring tfe_workspace_ids: name globs
+# (["*"] = all), include tags (a workspace must carry all of them), exclude
+# tags (any of them drops the workspace). null/[] disables a filter.
+tfc_select_workspaces() {
+  printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" -c --argjson names "${2:-null}" --argjson tags "${3:-null}" --argjson ignore "${4:-null}" '
+    def glob($p): ("^" + ($p | gsub("\\*"; ".*")) + "$");
+    [ .[]
+      | select(($names == null) or ($names == ["*"]) or ([$names[] as $p | (.name | test(glob($p)))] | any))
+      | select(($tags == null) or (($tags | length) == 0) or ([$tags[] as $t | ([.tags[]?] | index($t) != null)] | all))
+      | select(($ignore == null) or (($ignore | length) == 0) or (([.tags[]?] | map(select(. as $t | $ignore | index($t) != null)) | length) == 0))
+    ]'
+}
+
+# tfc_vcs_kind_for <tfc-service-provider> — the SG sourceConfigDestKind that
+# matches a TFC VCS provider (github, github_app, gitlab_hosted, ado_services,
+# ...); empty when unknown.
+tfc_vcs_kind_for() {
+  case "$1" in
+  github | github_app | github_enterprise) printf 'GITHUB_COM' ;;
+  gitlab_hosted | gitlab_community_edition | gitlab_enterprise_edition) printf 'GITLAB_COM' ;;
+  bitbucket_hosted | bitbucket_server | bitbucket_data_center) printf 'BITBUCKET_ORG' ;;
+  ado_services | ado_server) printf 'AZURE_DEVOPS' ;;
+  *) printf '' ;;
+  esac
+}
+
+# tfc_vcs_label_for <tfc-service-provider> — human name (GitHub, GitLab, ...).
+tfc_vcs_label_for() {
+  case "$1" in
+  github*) printf 'GitHub' ;;
+  gitlab*) printf 'GitLab' ;;
+  bitbucket*) printf 'Bitbucket' ;;
+  ado*) printf 'Azure DevOps' ;;
+  *) printf '%s' "$1" ;;
+  esac
+}
+
+# tfc_vcs_summary <workspaces-json> — one line per provider in use:
+# "<provider>\t<count>\t<repo-url-prefix or ->", most common first. The prefix
+# is repository-http-url with the repo identifier stripped (https://github.com,
+# https://gitlab.example.com, https://dev.azure.com, ...); "-" when the
+# workspaces of that provider disagree.
+tfc_vcs_summary() {
+  printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" -r '
+    [ .[] | select(.vcs_provider != "") | . as $o
+      | { provider: .vcs_provider,
+          prefix: (if ($o.vcs_url | length) > 0 and ($o.vcs_identifier | length) > 0 and ($o.vcs_url | endswith("/" + $o.vcs_identifier))
+                   then ($o.vcs_url | rtrimstr("/" + $o.vcs_identifier))
+                   else (($o.vcs_url | capture("^(?<h>https?://[^/]+)").h) // "") end) } ]
+    | group_by(.provider) | sort_by(-length)
+    | .[] | "\(.[0].provider)\t\(length)\t\(([.[].prefix] | unique | map(select(. != ""))) as $p | if ($p | length) == 1 then $p[0] else "-" end)"'
 }
 
 # require_tfc_auth — fail fast when the tfe provider would not be able to

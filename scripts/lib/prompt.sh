@@ -93,9 +93,14 @@ sg_select() {
     return 0
   fi
   printf '%s? %s%s\n' "$C_BOLD" "$q" "$C_RESET" >&2
+  # Descriptions line up in one column sized to the longest value (capped so a
+  # single very long name cannot push everything off-screen).
+  local w
+  w="$(sg_maxlen 10 "${vals[@]}")"
+  [ "$w" -gt 40 ] && w=40
   for ((i = 0; i < n; i++)); do
     if [ -n "${descs[i]}" ]; then
-      printf '  %s%2d)%s %-10s %s%s%s\n' "$C_CYAN" "$((i + 1))" "$C_RESET" "${vals[i]}" "$C_DIM" "— ${descs[i]}" "$C_RESET" >&2
+      printf "  %s%2d)%s %-${w}s %s%s%s\n" "$C_CYAN" "$((i + 1))" "$C_RESET" "${vals[i]}" "$C_DIM" "— ${descs[i]}" "$C_RESET" >&2
     else
       printf '  %s%2d)%s %s\n' "$C_CYAN" "$((i + 1))" "$C_RESET" "${vals[i]}" >&2
     fi

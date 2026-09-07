@@ -20,10 +20,21 @@ fi
 # Resolve yajsv from PATH (Docker image) or download+cache (native).
 YAJSV_BIN=$(sg_resolve yajsv sg_ensure_yajsv)
 
-sg_log "validating $# file(s) against schema/sg-payload.schema.json"
-# yajsv prints "<file>: valid" per file and exits non-zero if any file fails.
-# Strip the repo-root prefix from its output for readable, relative paths
-# (pipefail off so the pipeline's status is sed's; yajsv's status via PIPESTATUS).
+# yajsv prints "<file>: pass" / "<file>: fail: <reason>" per file and exits
+# non-zero if any file fails. Re-render its lines in the migrator's style
+# (✓/✗ + file name; the raw lines with -v) — pipefail off so the pipeline's
+# status is the loop's; yajsv's own status comes back via PIPESTATUS.
 set +o pipefail
-"$YAJSV_BIN" -s "$SCHEMA" "$@" 2>&1 | sed "s#${SG_REPO_ROOT}/##g" | awk '!seen[$0]++'
+"$YAJSV_BIN" -s "$SCHEMA" "$@" 2>&1 | sed "s#${SG_REPO_ROOT}/##g" | awk '!seen[$0]++' | while IFS= read -r line; do
+  if [ "${SG_VERBOSE:-0}" = "1" ]; then
+    printf '  %s\n' "$line" >&2
+    continue
+  fi
+  case "$line" in
+  *": pass") printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$(basename "${line%: pass}")" >&2 ;;
+  *": fail: "*) printf '  %s✗%s %s: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$(basename "${line%%: fail: *}")" "${line#*: fail: }" >&2 ;;
+  *": error: "*) printf '  %s✗%s %s: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$(basename "${line%%: error: *}")" "${line#*: error: }" >&2 ;;
+  *) printf '      %s\n' "$line" >&2 ;;
+  esac
+done
 exit "${PIPESTATUS[0]}"

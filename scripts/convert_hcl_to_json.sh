@@ -41,8 +41,11 @@ tmpfile="$WORKDIR/updated.ndjson"
 : >"$tmpfile"
 
 JSON_PATH=".VCSConfig.iacInputData.data"
+converted=0
+touched=0
 
 for ((i = 0; i < length; i++)); do
+  wf_converted=0
   # Extract ith object
   obj=$($JQ_BIN ".[$i]" <<<"$json_data")
 
@@ -86,6 +89,8 @@ for ((i = 0; i < length; i++)); do
     if [[ -n "$parsed" && "$parsed" != "null" ]]; then
       log "  workflow $((i + 1)): converted '$key' from HCL to JSON"
       new_val=$($JQ_BIN --arg k "$key" --argjson v "$parsed" '. + {($k): $v}' <<<"$new_val")
+      converted=$((converted + 1))
+      wf_converted=1
     else
       sg_warn "$(sg_rel "$INPUT_FILE_JSON") workflow $((i + 1)): could not parse '$key' as HCL; keeping original value"
     fi
@@ -93,6 +98,7 @@ for ((i = 0; i < length; i++)); do
 
   # Assign the converted data back at JSON_PATH
   updated_obj=$($JQ_BIN --argjson nv "$new_val" "$JSON_PATH = \$nv" <<<"$obj")
+  touched=$((touched + wf_converted))
 
   echo "$updated_obj" >>"$tmpfile"
 done
@@ -102,4 +108,9 @@ done
 outfile="$WORKDIR/output.json"
 $JQ_BIN -s '.' "$tmpfile" >"$outfile"
 mv "$outfile" "$INPUT_FILE_JSON"
-log "Done. Updated $(sg_rel "$INPUT_FILE_JSON") in place."
+# One result line per file (the orchestrator shows it as-is).
+if [ "$converted" -gt 0 ]; then
+  sg_log "$(basename "$INPUT_FILE_JSON"): $converted HCL value(s) converted to JSON in $touched of $length workflow(s)"
+else
+  sg_log "$(basename "$INPUT_FILE_JSON"): nothing to convert ($length workflow(s), values already JSON)"
+fi

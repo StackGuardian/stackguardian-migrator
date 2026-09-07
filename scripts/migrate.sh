@@ -61,6 +61,12 @@ TF_PARALLELISM="${SG_TF_PARALLELISM:-20}"
 RETRIES="${SG_RETRIES:-4}"
 RETRY_BASE="${SG_RETRY_BASE:-2}"
 PF=()
+# Phase bookkeeping: 'all' numbers its phases ("Phase 2/5: ...") and every
+# phase reports how long it took.
+PHASE_TOTAL=0
+PHASE_N=0
+PHASE_T0=$SECONDS
+RUN_T0=$SECONDS
 # The init wizard remembers the SG org / API host in .sg/state.json so a new
 # shell without SG_ORG still works; flags and env always win.
 if [ -z "$ORG" ] && [ -f "$STATE_FILE" ]; then
@@ -130,31 +136,73 @@ die() {
   exit 1
 }
 
-throttle() { while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$1" ]; do sleep 0.2; done; }
+# phase_begin <title> — "==> Phase 2/5: title" inside 'all', "==> Phase: title"
+# for a single command; starts the phase timer.
+phase_begin() {
+  PHASE_T0=$SECONDS
+  if [ "$PHASE_TOTAL" -gt 0 ]; then
+    PHASE_N=$((PHASE_N + 1))
+    sg_step "Phase $PHASE_N/$PHASE_TOTAL: $1"
+  else
+    sg_step "Phase: $1"
+  fi
+}
+# phase_took — "12s" / "1m 04s" since phase_begin.
+phase_took() { sg_fmt_secs $((SECONDS - PHASE_T0)); }
 
-# run_parallel <fn> <max> <items...> — runs fn over items, up to max at a time.
-# Each job's stdout+stderr is buffered to its own file (so concurrent tools see
-# a non-TTY and don't scatter spinner output across the terminal), then flushed
-# as a clean labeled block in submission order. Returns non-zero if any failed.
+# Ctrl-C: end the live progress line cleanly and say what happens next, instead
+# of a bare "^C" (a background terraform/sg-cli gets the same SIGINT from the
+# terminal, so nothing keeps running).
+trap 'sg_spin_clear; printf "\n" >&2; sg_warn "interrupted — re-run the same command to pick up where this left off"; exit 130' INT
+
+# rp_progress <statusdir> <label> <total> <t0> — one frame of the live
+# "<label> — done/total (elapsed)" line while run_parallel waits.
+rp_progress() {
+  local finished=0 f
+  for f in "$1"/*.rc; do [ -e "$f" ] && finished=$((finished + 1)); done
+  sg_spin_frame "$2 ${C_DIM}— $finished/$3 done ($(sg_fmt_secs $((SECONDS - $4))))${C_RESET}"
+}
+
+# run_parallel <fn> <max> <label> <items...> — runs fn over items, up to max at
+# a time, with a live progress line meanwhile. Each job's stdout+stderr is
+# buffered to its own file (so concurrent tools see a non-TTY and don't scatter
+# spinner output across the terminal), then flushed in submission order: a job
+# that printed a single line is shown as-is, longer or failed output gets a
+# "── <item> ──" header (always with -v). Returns non-zero if any job failed.
 run_parallel() {
-  local fn="$1" max="$2"
-  shift 2
-  local statusdir i=0 rc=0 item
+  local fn="$1" max="$2" label="$3"
+  shift 3
+  local statusdir i=0 rc=0 item total=$# t0=$SECONDS
   statusdir="$(mktemp -d)"
+  [ "$SG_ANIMATE" = "1" ] || sg_log "$label, up to $max in parallel..."
   for item in "$@"; do
-    throttle "$max"
+    while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$max" ]; do
+      rp_progress "$statusdir" "$label" "$total" "$t0"
+      sleep 0.2
+    done
     (
       "$fn" "$item" >"$statusdir/$i.out" 2>&1
       echo "$?" >"$statusdir/$i.rc"
     ) &
     i=$((i + 1))
   done
+  while [ "$(jobs -rp | wc -l | tr -d ' ')" -gt 0 ]; do
+    rp_progress "$statusdir" "$label" "$total" "$t0"
+    sleep 0.2
+  done
   wait
+  sg_spin_clear
   i=0
   for item in "$@"; do
-    printf '%s── %s ──%s\n' "$C_CYAN" "$(basename "$item")" "$C_RESET" >&2
+    if [ "$(cat "$statusdir/$i.rc" 2>/dev/null)" = "0" ]; then
+      if [ "$VERBOSE" -eq 1 ] || [ "$(wc -l <"$statusdir/$i.out" | tr -d ' ')" -gt 1 ]; then
+        printf '%s── %s ──%s\n' "$C_CYAN" "$(basename "$item")" "$C_RESET" >&2
+      fi
+    else
+      printf '%s── %s ──%s\n' "$C_CYAN" "$(basename "$item")" "$C_RESET" >&2
+      rc=1
+    fi
     [ -s "$statusdir/$i.out" ] && cat "$statusdir/$i.out" >&2
-    [ "$(cat "$statusdir/$i.rc" 2>/dev/null)" = "0" ] || rc=1
     i=$((i + 1))
   done
   rm -rf "$statusdir"
@@ -169,17 +217,27 @@ payload_sha() {
 
 # run_phase <name> <input-sha> <fn> — in 'all', skip a phase that already ran
 # with identical inputs; otherwise run it and record the inputs it ran with.
-# Phases that rewrite the payloads (enrich, convert) record the post-run hash,
-# so an unchanged export is recognised on the next run.
+# apply and enrich are keyed by the apply inputs (tfvars + workspace filter):
+# enrich only depends on what apply produced, and the later convert phase
+# rewrites the payloads, so a payload hash could never match again. convert and
+# validate record the post-run payload hash, so an unchanged export is
+# recognised on the next run.
 run_phase() {
   local name="$1" sha="$2" fn="$3" at
   if at="$(state_phase_done "$name" "$sha")" && [ -n "$at" ]; then
-    sg_log "skipping $name — unchanged since $at (--fresh to redo)"
+    at="${at%:*}"
+    at="${at/T/ } UTC"
+    if [ "$PHASE_TOTAL" -gt 0 ]; then
+      PHASE_N=$((PHASE_N + 1))
+      sg_log "skipping phase $PHASE_N/$PHASE_TOTAL ($name) — inputs unchanged since $at (--fresh to redo)"
+    else
+      sg_log "skipping $name — inputs unchanged since $at (--fresh to redo)"
+    fi
     return 0
   fi
   "$fn" || return $?
   case "$name" in
-  apply) state_mark_phase "$name" "$sha" ;;
+  apply | enrich) state_mark_phase "$name" "$sha" ;;
   *) state_mark_phase "$name" "$(payload_sha)" ;;
   esac
 }
@@ -240,18 +298,21 @@ cmd_init() {
       wizard_run || return 1
     fi
   fi
-  sg_log "workflow groups are created automatically as tfc-<project>; no mapping needed"
-  sg_log "next: ./sg-migrate.sh all"
-  completion_hint
-  sg_success "init complete"
+  # A standalone 'init' ends with what to do next; 'all' just carries on.
+  [ "${1:-}" = "standalone" ] && show_next_steps
+  return 0
 }
 
-# completion_hint — tell the user how to enable tab completion for their shell.
-# A child process cannot register completions in the parent shell, so this only
-# prints the one-liner (nothing is written to the user's rc files).
-completion_hint() {
-  sg_log "tab completion for this shell session: source <(./sg-migrate.sh completion)"
+# show_next_steps — the commands that make sense after init. (A child process
+# cannot register completions in the parent shell, so the completion line is a
+# hint only; nothing is written to the user's rc files.)
+show_next_steps() {
+  sg_step "Next steps"
+  next_row "$PROG all" "run the migration — the import plan is shown and confirmed before anything is created"
+  next_row "$PROG apply" "export only: review the payloads in $(sg_rel "$EXPORT_DIR")/ first, then '$PROG import'"
+  next_row "source <($PROG completion)" "tab completion for this shell session"
 }
+next_row() { printf '  %s%-38s%s %s%s%s\n' "$C_BOLD" "$1" "$C_RESET" "$C_DIM" "$2" "$C_RESET" >&2; }
 
 # current_shell — bash|zsh: the shell the user is typing in (detected by
 # sg-migrate.sh from its parent process), else the login shell.
@@ -326,9 +387,8 @@ set_triggers_pass() {
     sg_log "no workflows carry VCS triggers — nothing to register"
     return 0
   fi
-  sg_log "registering VCS triggers for $total workflow(s), up to $CONC in parallel (retries: $RETRIES)"
   local rc=0 f seg
-  run_parallel do_set_triggers "$CONC" "${PF[@]}" || rc=1
+  run_parallel do_set_triggers "$CONC" "registering VCS triggers for $total workflow(s)" "${PF[@]}" || rc=1
   for f in "${PF[@]}"; do
     seg="$(seg_of "$f")"
     if [ -f "$EXPORT_DIR/.triggers-result.$seg.json" ]; then
@@ -337,7 +397,7 @@ set_triggers_pass() {
     fi
   done
   if [ "$rc" -eq 0 ]; then
-    sg_success "vcs triggers registered"
+    sg_success "VCS triggers registered for $total workflow(s)"
   else
     sg_err "one or more VCS trigger registrations failed (re-run: $PROG triggers)"
     return 1
@@ -345,7 +405,7 @@ set_triggers_pass() {
 }
 
 cmd_triggers() {
-  sg_step "Phase: vcs triggers"
+  phase_begin "VCS triggers"
   [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set."
   [ -n "$ORG" ] || die "StackGuardian org not set (use --org or SG_ORG)."
   command -v curl >/dev/null 2>&1 || die "curl is required for VCS trigger registration."
@@ -357,7 +417,7 @@ cmd_triggers() {
 }
 
 cmd_clean() {
-  sg_step "Phase: clean"
+  phase_begin "clean"
   sg_log "removing local working artifacts..."
   rm -rf "$EXPORT_DIR"
   rm -rf "$TRANSFORMER_DIR/.terraform" "$TRANSFORMER_DIR/.terraform.lock.hcl" \
@@ -372,17 +432,24 @@ cmd_clean() {
   sg_success "clean complete"
 }
 
+# tf_init / tf_apply — terraform in the transformer dir, with jq on PATH for the
+# state export's local-exec. Always run in a subshell (sg_run_quiet backgrounds
+# them; the verbose path wraps them in parentheses).
+# shellcheck disable=SC2120  # extra terraform flags (-no-color) come from the quiet path
+tf_init() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform init -input=false "$@"; }
+tf_apply() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars "$@"; }
+
 cmd_apply() {
-  sg_step "Phase: apply (terraform)"
+  phase_begin "apply (terraform)"
   command -v terraform >/dev/null 2>&1 || die "terraform not found on PATH"
   [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init"
   preflight_run apply
   # State export (TFC API) calls curl + jq from terraform's local-exec; make sure
   # both are on PATH for the apply (jq from cache if not already installed).
   command -v curl >/dev/null 2>&1 || die "curl is required for state export"
-  local jqdir tflog rc=0
+  local tflog rc=0
   local -a tfvar_args=()
-  jqdir="$(dirname "$(sg_resolve jq sg_ensure_jq)")"
+  TF_PATH="$(dirname "$(sg_resolve jq sg_ensure_jq)"):$PATH"
   if [ "${#WS_FILTER[@]}" -gt 0 ]; then
     JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"
     tfvar_args=(-var "workspacenames=$(ws_filter_json)")
@@ -390,36 +457,32 @@ cmd_apply() {
   fi
 
   if [ "$VERBOSE" -eq 1 ]; then
-    (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 &&
-      terraform init -input=false &&
-      terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars "${tfvar_args[@]}") || rc=$?
+    # shellcheck disable=SC2119
+    (tf_init && tf_apply ${tfvar_args[@]+"${tfvar_args[@]}"}) || rc=$?
   else
-    # Quiet: capture terraform's verbose plan/output; surface only progress, the
-    # final summary, and (on failure) the captured log.
+    # Quiet: terraform's init/plan output goes to a log that is shown only on
+    # failure; the terminal gets a live progress line per step instead.
     tflog="$(mktemp)"
-    sg_log "initializing terraform (providers)..."
-    (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 && terraform init -input=false -no-color) >"$tflog" 2>&1 || rc=$?
+    sg_run_quiet "initializing terraform providers" "terraform providers ready" "$tflog" tf_init -no-color || rc=$?
     if [ "$rc" -eq 0 ]; then
-      sg_log "reading workspaces, generating payloads, exporting state..."
-      (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 &&
-        terraform apply -auto-approve -compact-warnings -no-color -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars "${tfvar_args[@]}") >"$tflog" 2>&1 || rc=$?
+      sg_run_quiet "reading workspaces, generating payloads, exporting state" "workspaces read, payloads generated, state exported" "$tflog" \
+        tf_apply -no-color ${tfvar_args[@]+"${tfvar_args[@]}"} || rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
       sg_err "terraform failed (rc=$rc):"
       cat "$tflog" >&2
-    else
-      grep -E '^(Apply complete|No changes)' "$tflog" | sed 's/^/  /' >&2 || true
     fi
     rm -f "$tflog"
   fi
 
   [ "$rc" -eq 0 ] || return "$rc"
-  sg_success "apply complete — payloads in $(sg_rel "$EXPORT_DIR")"
+  payload_files
+  sg_success "apply complete in $(phase_took) — ${#PF[@]} payload file(s) in $(sg_rel "$EXPORT_DIR")/"
   show_migration_summary
 }
 
 cmd_enrich() {
-  sg_step "Phase: variable sets"
+  phase_begin "variable sets"
   [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS") (run: $PROG init)."
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR") (run 'apply' first)."
@@ -433,12 +496,11 @@ cmd_enrich() {
 do_convert() { "$SCRIPT_DIR/convert_hcl_to_json.sh" "$1"; }
 
 cmd_convert() {
-  sg_step "Phase: convert (HCL → JSON)"
+  phase_begin "convert (HCL → JSON)"
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR") (run 'apply' first)."
-  sg_log "converting ${#PF[@]} payload(s), up to $CONC in parallel"
-  if run_parallel do_convert "$CONC" "${PF[@]}"; then
-    sg_success "converted ${#PF[@]} payload(s)"
+  if run_parallel do_convert "$CONC" "converting ${#PF[@]} payload file(s)" "${PF[@]}"; then
+    sg_success "converted ${#PF[@]} payload file(s) in $(phase_took)"
   else
     sg_err "conversion failed for one or more payloads"
     return 1
@@ -446,13 +508,13 @@ cmd_convert() {
 }
 
 cmd_validate() {
-  sg_step "Phase: validate"
+  phase_begin "validate"
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR")."
   if "$SCRIPT_DIR/validate_payload.sh" "${PF[@]}"; then
-    sg_success "all ${#PF[@]} payload(s) valid"
+    sg_success "${#PF[@]} payload file(s) valid against schema/sg-payload.schema.json"
   else
-    sg_err "validation failed"
+    sg_err "validation failed — fix the payload(s) above (or the transformer) and re-run '$PROG validate'"
     return 1
   fi
 }
@@ -479,7 +541,7 @@ names_json() { printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
 # the trigger pass see what was actually imported); each fallback is appended to
 # terraform-version-fallbacks.log. Any other per-workflow failure fails the file.
 do_import() {
-  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() name line tmp names work all_names
+  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() name line tmp names work all_names patch
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   # With --workspace, import only the selected workflows (a filtered copy).
@@ -512,12 +574,18 @@ do_import() {
   rm -f "$out"
 
   if [ "${#fb[@]}" -gt 0 ]; then
-    sg_warn "${#fb[@]} workflow(s) pinned above SG's managed Terraform ceiling ($ceiling); re-importing with $SG_DEFAULT_TF_VERSION"
+    sg_warn "${#fb[@]} workflow(s) pinned above SG's managed Terraform ceiling ($ceiling); re-importing with ${SG_TF_FALLBACK_LABEL:-$SG_DEFAULT_TF_VERSION}"
     names="$(names_json "${fb[@]}")"
     tmp="$(mktemp "$EXPORT_DIR/.fallback.$seg.XXXXXX")"
-    # Patch the affected workflows in the payload and re-import only those.
-    "$JQ_BIN" --arg v "$SG_DEFAULT_TF_VERSION" --argjson names "$names" \
-      'map(if (.ResourceName as $n | $names | index($n)) != null then .TerraformConfig.terraformVersion = $v else . end)' "$f" >"$tmp.full" &&
+    # Patch the affected workflows in the payload and re-import only those: a
+    # fixed fallback version, or (SGDefaultTerraformVersion = null) no version at
+    # all so the API fills it from the org's execution preset.
+    if [ -n "$SG_DEFAULT_TF_VERSION" ]; then
+      patch='map(if (.ResourceName as $n | $names | index($n)) != null then .TerraformConfig.terraformVersion = $v else . end)'
+    else
+      patch='map(if (.ResourceName as $n | $names | index($n)) != null then del(.TerraformConfig.terraformVersion) else . end)'
+    fi
+    "$JQ_BIN" --arg v "$SG_DEFAULT_TF_VERSION" --argjson names "$names" "$patch" "$f" >"$tmp.full" &&
       "$JQ_BIN" --argjson names "$names" \
         'map(select(.ResourceName as $n | $names | index($n) != null))' "$tmp.full" >"$tmp" ||
       {
@@ -531,7 +599,7 @@ do_import() {
         failed+=("$name")
       else
         line="$("$JQ_BIN" -r --arg n "$name" '.[] | select(.ResourceName == $n) | .TerraformConfig.terraformVersion' "$f")"
-        printf '%s/%s: %s -> %s (above SG managed ceiling %s)\n' "$grp" "$name" "$line" "$SG_DEFAULT_TF_VERSION" "$ceiling" >>"$EXPORT_DIR/terraform-version-fallbacks.log"
+        printf '%s/%s: %s -> %s (above SG managed ceiling %s)\n' "$grp" "$name" "$line" "${SG_DEFAULT_TF_VERSION:-execution preset}" "$ceiling" >>"$EXPORT_DIR/terraform-version-fallbacks.log"
       fi
     done
     rm -f "$out"
@@ -566,17 +634,18 @@ tf_fallback_notice() {
   cat >&2 <<NOTICE
   StackGuardian ships managed Terraform runtimes only up to the last MPL-licensed
   (FOSS) release; newer versions are BSL-licensed and are not bundled. The
-  workflows above were created with $SG_DEFAULT_TF_VERSION instead of the version
-  pinned in TFC, so they will run a different Terraform than before - verify the
-  configuration is compatible before the first run. To keep a newer version, set
-  workspaceOverrides[<name>].terraformVersion to a binary path mounted from a
-  private runner, or use a custom runtime container template
-  (wfStepTemplateRevisionId), and re-import.
+  workflows above were created with ${SG_TF_FALLBACK_LABEL:-$SG_DEFAULT_TF_VERSION}
+  instead of the version pinned in TFC, so they will run a different Terraform
+  than before - verify the configuration is compatible before the first run. To
+  keep a newer version, set workspaceOverrides[<name>].terraformVersion to a
+  binary path mounted from a private runner, or point the org's execution preset
+  (or the override) at a custom runtime image (wfStepTemplateRevisionId) that
+  ships it, and re-import.
 NOTICE
 }
 
 cmd_import() {
-  sg_step "Phase: import"
+  phase_begin "import"
   [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set."
   [ -n "$ORG" ] || die "StackGuardian org not set (use --org or SG_ORG)."
   command -v curl >/dev/null 2>&1 || die "curl is required for workflow-group checks/creation."
@@ -591,12 +660,12 @@ cmd_import() {
 
   # Build the plan: resolve each project's group, check existence, and decide
   # which groups need creating. Override groups (from the map) must already exist.
-  local fail=0 to_create=" " f seg grp count override is_override code status
-  printf '%sImport plan%s (org: %s%s%s, %s)\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$ORG" "$C_RESET" "$SG_BASE_URL" >&2
-  printf '  %s%-34s %-26s %-9s %s%s\n' "$C_BOLD" "FILE" "WORKFLOW GROUP" "WORKFLOWS" "STATUS" "$C_RESET" >&2
+  local fail=0 to_create=" " n_create=0 total_wf=0 f seg grp count override is_override code status fw gw q i
+  local -a files=() groups=() counts=() statuses=()
   for f in "${PF[@]}"; do
     seg="$(seg_of "$f")"
-    count="$("$JQ_BIN" 'length' "$f")"
+    count="$("$JQ_BIN" --argjson ws "$(ws_filter_json)" '[.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null))] | length' "$f")"
+    total_wf=$((total_wf + count))
     override=""
     [ -f "$MAPPING" ] && override="$("$JQ_BIN" -r --arg k "$seg" '.[$k] // empty' "$MAPPING" 2>/dev/null || true)"
     if [ -n "$override" ]; then
@@ -616,7 +685,11 @@ cmd_import() {
         fail=1
       elif [ "$CREATE_GROUPS" -eq 1 ]; then
         status="${C_YELLOW}create${C_RESET}"
-        case "$to_create" in *" $grp "*) ;; *) to_create="$to_create$grp " ;; esac
+        case "$to_create" in *" $grp "*) ;; *)
+          to_create="$to_create$grp "
+          n_create=$((n_create + 1))
+          ;;
+        esac
       else
         status="${C_RED}missing!${C_RESET}"
         fail=1
@@ -626,15 +699,34 @@ cmd_import() {
     000) die "could not reach $SG_BASE_URL" ;;
     *) die "unexpected HTTP $code checking group '$grp'" ;;
     esac
-    printf '  %-34s %-26s %-9s %s\n' "$(basename "$f")" "$grp" "$count" "$status" >&2
+    files+=("$(basename "$f")")
+    groups+=("$grp")
+    counts+=("$count")
+    statuses+=("$status")
+  done
+  fw="$(sg_maxlen 4 "${files[@]}")"
+  gw="$(sg_maxlen 14 "${groups[@]}")"
+  printf '%sImport plan%s (org: %s%s%s, %s)\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$ORG" "$C_RESET" "$SG_BASE_URL" >&2
+  printf "  %s%-${fw}s  %-${gw}s  %-9s %s%s\n" "$C_BOLD" "FILE" "WORKFLOW GROUP" "WORKFLOWS" "STATUS" "$C_RESET" >&2
+  for ((i = 0; i < ${#files[@]}; i++)); do
+    printf "  %-${fw}s  %-${gw}s  %-9s %s\n" "${files[i]}" "${groups[i]}" "${counts[i]}" "${statuses[i]}" >&2
   done
   if [ "$fail" -ne 0 ]; then
     die "some groups are missing (override groups are not auto-created; create them or remove the override)."
   fi
 
-  # Fallback Terraform version for workflows the API rejects as above the
-  # managed ceiling: SGDefaultTerraformVersion from terraform.tfvars, else 1.5.7.
-  SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-$(tfvars_get '.SGDefaultTerraformVersion' TERRAFORM-1.5.7)}"
+  # Fallback for workflows the API rejects as above the managed ceiling: a fixed
+  # SGDefaultTerraformVersion (missing key = 1.5.7), or an explicit null in
+  # terraform.tfvars = drop the version so the org's execution preset decides.
+  # The preset itself is read so the plan can show what "preset" resolves to.
+  if tfvars_is_null SGDefaultTerraformVersion; then
+    SG_DEFAULT_TF_VERSION=""
+  else
+    SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-$(tfvars_get '.SGDefaultTerraformVersion' TERRAFORM-1.5.7)}"
+  fi
+  # shellcheck disable=SC2034  # read by report.sh (plan) and checklist.sh
+  SG_PRESET_JSON="$(sg_execution_preset)" || SG_PRESET_JSON=""
+  preset_labels
   show_import_plan "${PF[@]}"
   if [ "$DRY_RUN" -eq 1 ]; then
     sg_success "dry run — nothing was created or changed"
@@ -642,9 +734,14 @@ cmd_import() {
   fi
 
   if [ "$ASSUME_YES" -ne 1 ]; then
-    printf '%sProceed?%s This imports to %s and creates any "create" groups. [y/N] ' "$C_BOLD$C_YELLOW" "$C_RESET" "$ORG" >&2
-    read -r ans || ans=""
-    case "$ans" in y | Y | yes | YES) ;; *) die "Aborted." ;; esac
+    q="Import $total_wf workflow(s) into $ORG"
+    [ "$n_create" -gt 0 ] && q="$q and create $n_create workflow group(s)"
+    sg_interactive || die "no terminal to confirm the import — re-run with -y to import without a prompt"
+    if ! sg_confirm "$q?" N; then
+      sg_warn "import cancelled — nothing was changed in $ORG"
+      sg_dim "re-run '$PROG all' (or '$PROG import') to come back to this plan; the export phases are saved and skipped"
+      return 1
+    fi
   fi
 
   # Create the missing tfc-* groups before importing into them.
@@ -660,7 +757,7 @@ cmd_import() {
   # (a changed payload or a previous failure re-imports the whole file;
   # sg-cli updates existing workflows in place).
   local -a todo=()
-  local skipped=0 seg
+  local skipped=0 import_rc=0
   for f in "${PF[@]}"; do
     seg="$(seg_of "$f")"
     if [ "$FRESH" -eq 0 ] && [ "${#WS_FILTER[@]}" -eq 0 ] && state_import_done "$seg" "$(sg_sha_files "$f")"; then
@@ -669,11 +766,9 @@ cmd_import() {
     fi
     todo+=("$f")
   done
-  [ "$skipped" -gt 0 ] && sg_log "skipping $skipped payload(s) already imported and unchanged (use --fresh to re-import)"
-  local import_rc=0
+  [ "$skipped" -gt 0 ] && sg_log "skipping $skipped payload file(s) already imported and unchanged (--fresh to re-import)"
   if [ "${#todo[@]}" -gt 0 ]; then
-    sg_log "importing ${#todo[@]} payload(s), up to $CONC in parallel (retries: $RETRIES)"
-    run_parallel do_import "$CONC" "${todo[@]}" || import_rc=1
+    run_parallel do_import "$CONC" "importing ${#todo[@]} payload file(s) (retries: $RETRIES)" "${todo[@]}" || import_rc=1
     for f in "${todo[@]}"; do
       seg="$(seg_of "$f")"
       if [ -f "$EXPORT_DIR/.import-result.$seg.json" ]; then
@@ -684,7 +779,7 @@ cmd_import() {
   fi
   tf_fallback_notice
   if [ "$import_rc" -eq 0 ]; then
-    sg_success "import complete (${#todo[@]} payload(s) imported, $skipped skipped)"
+    sg_success "import complete (${#todo[@]} payload file(s) imported, $skipped skipped)"
   else
     sg_err "one or more workflows failed to import (see above); VCS triggers are still registered for the ones that succeeded"
   fi
@@ -696,7 +791,22 @@ cmd_import() {
   fi
   [ "$SECRET_STUBS" -eq 1 ] && create_secret_stubs
   write_checklist
+  finish_line "$import_rc"
   return "$import_rc"
+}
+
+# finish_line <rc> — the last line of an import / all run: outcome, total time,
+# and whether the checklist still has items for a human.
+finish_line() {
+  local open="${CHECKLIST_OPEN:-0}" took
+  took="$(sg_fmt_secs $((SECONDS - RUN_T0)))"
+  if [ "$1" -ne 0 ]; then
+    sg_err "finished with failures in $took — fix what is reported above and re-run '$PROG import' (only failed or changed files are retried)"
+  elif [ "$open" -gt 0 ]; then
+    sg_success "migration complete in $took — $open item(s) still need a human, see $(sg_rel "$EXPORT_DIR")/post-import-checklist.md"
+  else
+    sg_success "migration complete in $took — nothing left to do by hand"
+  fi
 }
 
 # Single source of truth for shell completion (keep in sync with the parser below
@@ -873,7 +983,7 @@ main() {
   export SG_VERBOSE="$VERBOSE"
 
   case "$CMD" in
-  init) cmd_init ;;
+  init) cmd_init standalone ;;
   clean) cmd_clean ;;
   apply) cmd_apply ;;
   enrich) cmd_enrich ;;
@@ -904,8 +1014,12 @@ main() {
     preflight_run all
     [ "$FRESH" -eq 1 ] && { state_reset; sg_log "--fresh: previous run state discarded"; }
     JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
-    run_phase apply "$(sg_sha "$(sg_sha_files "$TFVARS")|$(ws_filter_json)")" cmd_apply
-    if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$(payload_sha)" cmd_enrich; fi
+    PHASE_TOTAL=4
+    [ "$ENRICH_VARSETS" -eq 1 ] && PHASE_TOTAL=5
+    local apply_sha
+    apply_sha="$(sg_sha "$(sg_sha_files "$TFVARS")|$(ws_filter_json)")"
+    run_phase apply "$apply_sha" cmd_apply
+    if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$apply_sha" cmd_enrich; fi
     run_phase convert "$(payload_sha)" cmd_convert
     run_phase validate "$(payload_sha)" cmd_validate
     cmd_import

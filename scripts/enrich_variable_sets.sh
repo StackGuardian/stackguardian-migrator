@@ -78,7 +78,9 @@ if [ "$set_count" -eq 0 ]; then
   sg_log "no variable sets found; nothing to enrich"
   exit 0
 fi
-sg_log "resolving $set_count variable set(s) across workspaces..."
+sg_log "resolving $set_count variable set(s) across workspaces:"
+# One line per set: name, scope, size — so it is clear where merged vars come from.
+"$JQ_BIN" -r '.[] | "  - \(.name): \(if .global then "global" else ([(if (.projids | length) > 0 then "\(.projids | length) project(s)" else empty end), (if (.wsids | length) > 0 then "\(.wsids | length) workspace(s)" else empty end)] | if length == 0 then "unassigned" else join(", ") end) end), \(.vars | length) var(s)\(if .priority then ", priority" else "" end)"' "$WORK/sets.json" >&2
 
 # Per workspace -> list of winning vars (set-vs-set precedence resolved; tagged
 # with priority + sensitive + conflict). rank: non-priority global/proj/ws = 1/2/3,
@@ -113,6 +115,7 @@ IGNORE_JSON="$(tfvars_get_json .ignoreVarPatterns)"
 # Merge the effective set vars into each payload, then report counts.
 for f in "$@"; do
   before_tf="$("$JQ_BIN" '[.[].VCSConfig.iacInputData.data | length] | add // 0' "$f")"
+  before_env="$("$JQ_BIN" '[.[].EnvironmentVariables | length] | add // 0' "$f")"
   out="$WORK/merged.json"
   "$JQ_BIN" --slurpfile eff "$WORK/effective.json" --argjson ignore "$IGNORE_JSON" '
     ($eff[0]) as $E
@@ -136,7 +139,12 @@ for f in "$@"; do
       )
   ' "$f" >"$out" && mv "$out" "$f"
   after_tf="$("$JQ_BIN" '[.[].VCSConfig.iacInputData.data | length] | add // 0' "$f")"
-  sg_log "$(basename "$f"): +$((after_tf - before_tf)) terraform var(s) from variable sets"
+  after_env="$("$JQ_BIN" '[.[].EnvironmentVariables | length] | add // 0' "$f")"
+  if [ "$((after_tf - before_tf + after_env - before_env))" -eq 0 ]; then
+    sg_log "$(basename "$f"): no new variables (sets only override or add nothing here)"
+  else
+    sg_log "$(basename "$f"): +$((after_tf - before_tf)) terraform, +$((after_env - before_env)) env var(s) from variable sets"
+  fi
 done
 
 # Report sensitive set vars (cannot be migrated) and key conflicts.
