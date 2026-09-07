@@ -800,109 +800,117 @@ ZSH
   esac
 }
 
-CMD=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-  -y | --yes) ASSUME_YES=1 ;;
-  --org)
-    ORG="$2"
+# main — argument parsing and dispatch. Kept in a function so bash parses the
+# whole file before running anything: the repo is bind-mounted into the
+# container, and a script edited while it runs would otherwise be read
+# half-old, half-new.
+main() {
+  local CMD=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    -y | --yes) ASSUME_YES=1 ;;
+    --org)
+      ORG="$2"
+      shift
+      ;;
+    --org=*) ORG="${1#*=}" ;;
+    --export-dir)
+      EXPORT_DIR="$2"
+      shift
+      ;;
+    --export-dir=*) EXPORT_DIR="${1#*=}" ;;
+    --mapping)
+      MAPPING="$2"
+      shift
+      ;;
+    --mapping=*) MAPPING="${1#*=}" ;;
+    --concurrency)
+      CONC="$2"
+      shift
+      ;;
+    --concurrency=*) CONC="${1#*=}" ;;
+    --no-create-groups) CREATE_GROUPS=0 ;;
+    --no-variable-sets) ENRICH_VARSETS=0 ;;
+    --no-vcs-triggers) VCS_TRIGGERS=0 ;;
+    --skip-preflight) export SKIP_PREFLIGHT=1 ;;
+    --fresh) FRESH=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    --no-secret-stubs) SECRET_STUBS=0 ;;
+    --project)
+      PROJECT_FILTER+=("$2")
+      shift
+      ;;
+    --project=*) PROJECT_FILTER+=("${1#*=}") ;;
+    --workspace)
+      WS_FILTER+=("$2")
+      shift
+      ;;
+    --workspace=*) WS_FILTER+=("${1#*=}") ;;
+    -v | --verbose) VERBOSE=1 ;;
+    --all) PURGE=1 ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    init | apply | enrich | convert | validate | import | triggers | all | clean | preflight | checklist) CMD="$1" ;;
+    completion)
+      cmd_completion "${2:-}"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+    esac
     shift
-    ;;
-  --org=*) ORG="${1#*=}" ;;
-  --export-dir)
-    EXPORT_DIR="$2"
-    shift
-    ;;
-  --export-dir=*) EXPORT_DIR="${1#*=}" ;;
-  --mapping)
-    MAPPING="$2"
-    shift
-    ;;
-  --mapping=*) MAPPING="${1#*=}" ;;
-  --concurrency)
-    CONC="$2"
-    shift
-    ;;
-  --concurrency=*) CONC="${1#*=}" ;;
-  --no-create-groups) CREATE_GROUPS=0 ;;
-  --no-variable-sets) ENRICH_VARSETS=0 ;;
-  --no-vcs-triggers) VCS_TRIGGERS=0 ;;
-  --skip-preflight) export SKIP_PREFLIGHT=1 ;;
-  --fresh) FRESH=1 ;;
-  --dry-run) DRY_RUN=1 ;;
-  --no-secret-stubs) SECRET_STUBS=0 ;;
-  --project)
-    PROJECT_FILTER+=("$2")
-    shift
-    ;;
-  --project=*) PROJECT_FILTER+=("${1#*=}") ;;
-  --workspace)
-    WS_FILTER+=("$2")
-    shift
-    ;;
-  --workspace=*) WS_FILTER+=("${1#*=}") ;;
-  -v | --verbose) VERBOSE=1 ;;
-  --all) PURGE=1 ;;
-  -h | --help)
+  done
+  # No command: show the help menu instead of running the whole pipeline.
+  if [ -z "$CMD" ]; then
     usage
     exit 0
+  fi
+  export SG_VERBOSE="$VERBOSE"
+
+  case "$CMD" in
+  init) cmd_init ;;
+  clean) cmd_clean ;;
+  apply) cmd_apply ;;
+  enrich) cmd_enrich ;;
+  convert) cmd_convert ;;
+  validate) cmd_validate ;;
+  import) cmd_import ;;
+  triggers) cmd_triggers ;;
+  preflight)
+    export SG_API_TOKEN SG_BASE_URL
+    cmd_preflight
     ;;
-  init | apply | enrich | convert | validate | import | triggers | all | clean | preflight | checklist) CMD="$1" ;;
-  completion)
-    cmd_completion "${2:-}"
-    exit 0
-    ;;
-  *)
-    echo "Unknown argument: $1" >&2
-    usage
-    exit 1
+  checklist) cmd_checklist ;;
+  all)
+    if [ ! -f "$TFVARS" ]; then
+      cmd_init || exit 1
+      if ! sg_interactive; then
+        # Template copy: it still contains placeholders.
+        die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
+      fi
+      echo >&2
+      if ! sg_confirm "Continue with the migration now? (No = edit $(sg_rel "$TFVARS") first, e.g. workspaceOverrides, then re-run '$PROG all')" Y; then
+        sg_log "edit $(sg_rel "$TFVARS"), then re-run '$PROG all'"
+        exit 0
+      fi
+    fi
+    # Fail fast on everything the whole pipeline needs, before the (long) apply.
+    export SG_API_TOKEN SG_BASE_URL
+    preflight_run all
+    [ "$FRESH" -eq 1 ] && { state_reset; sg_log "--fresh: previous run state discarded"; }
+    JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
+    run_phase apply "$(sg_sha "$(sg_sha_files "$TFVARS")|$(ws_filter_json)")" cmd_apply
+    if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$(payload_sha)" cmd_enrich; fi
+    run_phase convert "$(payload_sha)" cmd_convert
+    run_phase validate "$(payload_sha)" cmd_validate
+    cmd_import
     ;;
   esac
-  shift
-done
-# No command: show the help menu instead of running the whole pipeline.
-if [ -z "$CMD" ]; then
-  usage
-  exit 0
-fi
-export SG_VERBOSE="$VERBOSE"
+}
 
-case "$CMD" in
-init) cmd_init ;;
-clean) cmd_clean ;;
-apply) cmd_apply ;;
-enrich) cmd_enrich ;;
-convert) cmd_convert ;;
-validate) cmd_validate ;;
-import) cmd_import ;;
-triggers) cmd_triggers ;;
-preflight)
-  export SG_API_TOKEN SG_BASE_URL
-  cmd_preflight
-  ;;
-checklist) cmd_checklist ;;
-all)
-  if [ ! -f "$TFVARS" ]; then
-    cmd_init || exit 1
-    if ! sg_interactive; then
-      # Template copy: it still contains placeholders.
-      die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
-    fi
-    echo >&2
-    if ! sg_confirm "Continue with the migration now? (No = edit $(sg_rel "$TFVARS") first, e.g. workspaceOverrides, then re-run '$PROG all')" Y; then
-      sg_log "edit $(sg_rel "$TFVARS"), then re-run '$PROG all'"
-      exit 0
-    fi
-  fi
-  # Fail fast on everything the whole pipeline needs, before the (long) apply.
-  export SG_API_TOKEN SG_BASE_URL
-  preflight_run all
-  [ "$FRESH" -eq 1 ] && { state_reset; sg_log "--fresh: previous run state discarded"; }
-  JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
-  run_phase apply "$(sg_sha "$(sg_sha_files "$TFVARS")|$(ws_filter_json)")" cmd_apply
-  if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$(payload_sha)" cmd_enrich; fi
-  run_phase convert "$(payload_sha)" cmd_convert
-  run_phase validate "$(payload_sha)" cmd_validate
-  cmd_import
-  ;;
-esac
+main "$@"
