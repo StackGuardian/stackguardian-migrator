@@ -16,25 +16,95 @@ tfWorkspaceIgnoreTags = null
 # Directory to export Terraform files to
 exportPath = "export"
 
+# TFC/TFE-specific variables that are not migrated (regexes on the variable
+# name), e.g. TFC_WORKSPACE_NAME or TFC_AWS_RUN_ROLE_ARN. [] keeps everything.
+ignoreVarPatterns = ["^TFC_", "^TFE_"]
+
 # Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true
 SGDefaultWfApprovers = []
 
 # Prefix for your repo URL
-SGDefaultIACVCSRepoPrefix = "https://www.github.com"
+SGDefaultIACVCSRepoPrefix = "https://github.com"
 
 # Provide an integration id like /integrations/aws-dev-account or /secrets/my-git-token
 SGDefaultVCSAuthIntegrationID = "/integrations/github_com"
 
 # Integration to use to authenticate against your cloud provider
 SGDefaultDeploymentPlatformConfig = [
-    {
-      "kind" : "AWS_RBAC",
-      "config" : {
-        "integrationId" : "/integrations/aws-dev-account",
-        "profileName" : "default"
-      }
+  {
+    "kind" : "AWS_RBAC",
+    "config" : {
+      "integrationId" : "/integrations/aws-dev-account",
+      "profileName" : "default"
     }
-  ]
+  }
+]
+
+# Runners for every workflow: SG-hosted shared runners (default), or put all
+# workflows behind a private runner group:
+#   SGDefaultRunnerConstraints = { type = "private", names = ["sg-runner"] }
+# Set to null to send no runner constraints, so StackGuardian applies the org's
+# execution preset (Settings -> Runner groups -> Execution presets).
+SGDefaultRunnerConstraints = { type = "shared" }
 
 # Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
 SGDefaultSourceConfigDestKind = "GITHUB_COM"
+
+# Where the workflows get their Terraform version from:
+#   "carry"  - keep each workspace's pinned TFC version; the rest (see below) use
+#              SGDefaultTerraformVersion
+#   "preset" - send no version at all: StackGuardian fills it from the org's
+#              execution preset (Settings -> Runner groups -> Execution presets),
+#              or its platform default (managed Terraform 1.5.7)
+SGTerraformVersionSource = "carry"
+
+# Fallback for "carry": used when a workspace's terraform_version is not a pinned
+# semver (e.g. "latest" or a constraint), and by the importer when the SG API
+# rejects a pinned version as above the managed ceiling (1.5.7 - the last MPL/
+# FOSS Terraform release; newer versions are BSL and not bundled) - those
+# workflows are re-created with this version and logged in
+# export/terraform-version-fallbacks.log. Set to null to leave them to the org's
+# execution preset instead.
+SGDefaultTerraformVersion = "TERRAFORM-1.5.7"
+
+# Pre-configure VCS triggers on each VCS-backed workflow, remapped from the
+# workspace's own TFC settings (tracked branch, push, PR speculative plans, file
+# triggers). Set false to import workflows without any triggers.
+SGDefaultEnableVCSTriggers = true
+
+# Re-pull state for every workspace on each apply. Leave false for idempotent runs.
+forceStateRefresh = false
+
+# Per-workspace overrides, keyed by workspace name. Any field set here wins over
+# the SGDefault* value above, for that workspace only. All fields are optional.
+# workspaceOverrides = {
+#   "prod-networking" = {
+#     DeploymentPlatformConfig = [
+#       {
+#         "kind" : "AWS_RBAC",
+#         "config" : { "integrationId" : "/integrations/aws-prod", "profileName" : "default" }
+#       }
+#     ]
+#     RunnerConstraints    = { "type" : "private", "names" : ["sg-runner"] }
+#     Approvers            = ["lead@example.com"]
+#     vcsAuthIntegrationID = "/integrations/github_prod"
+#     vcsRepoPrefix        = "https://www.github.com"
+#     sourceConfigDestKind = "GITHUB_COM"
+#     terraformVersion     = "TERRAFORM-1.7.5"
+#     extraEnvironmentVariables = [
+#       { "config" : { "textValue" : "us-east-1", "varName" : "AWS_REGION" }, "kind" : "PLAIN_TEXT" }
+#     ]
+#     # Full override of the derived VCS triggers (replaces the remap entirely).
+#     VCSTriggers = {
+#       type                  = "GITHUB_COM"
+#       tracked_branch        = "main"
+#       approval_pre_apply    = true
+#       plan_only             = false
+#       push                  = { createWfRun = { enabled = true } }
+#       pull_request_opened   = { createWfRun = { enabled = true } }
+#       pull_request_modified = { createWfRun = { enabled = true } }
+#       file_triggers_enabled = true
+#       file_trigger_patterns = ["modules/networking/*"]
+#     }
+#   }
+# }

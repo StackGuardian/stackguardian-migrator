@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "StackGuardian bulk workflow payload",
+  "description": "Validates the array of workflow objects produced by the transformer (sg-payload.<project>.json). Constraints (ResourceName length, kind/sourceConfigDestKind enums) are derived from schema/sg-openapi.json (#/components/schemas/Workflow and related). Lenient by design: only the fields the transformer emits are checked; unknown fields are allowed so the schema does not need to track every optional API field.",
+  "type": "array",
+  "items": { "$ref": "#/definitions/workflow" },
+  "definitions": {
+    "workflow": {
+      "type": "object",
+      "required": ["ResourceName", "WfType", "VCSConfig"],
+      "properties": {
+        "ResourceName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "WfType": { "type": "string", "minLength": 1 },
+        "Description": { "type": "string" },
+        "Tags": { "type": "array", "items": { "type": "string" } },
+        "Approvers": { "type": "array", "items": { "type": "string" } },
+        "UserSchedules": { "type": "array" },
+        "EnvironmentVariables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "config"],
+            "properties": {
+              "kind": { "type": "string" },
+              "config": {
+                "type": "object",
+                "required": ["varName"],
+                "properties": {
+                  "varName": { "type": "string", "minLength": 1 },
+                  "textValue": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "DeploymentPlatformConfig": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "config"],
+            "properties": {
+              "kind": {
+                "enum": ["AWS_STATIC", "AWS_RBAC", "AWS_OIDC", "AZURE_STATIC", "AZURE_OIDC", "AZURE_MANAGED_ID_OIDC", "GCP_STATIC", "GCP_OIDC"]
+              },
+              "config": { "type": "object" }
+            }
+          }
+        },
+        "RunnerConstraints": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string" },
+            "names": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "VCSConfig": {
+          "type": "object",
+          "required": ["iacVCSConfig", "iacInputData"],
+          "properties": {
+            "iacVCSConfig": {
+              "type": "object",
+              "properties": {
+                "customSource": {
+                  "type": "object",
+                  "properties": {
+                    "sourceConfigDestKind": {
+                      "enum": ["GITHUB_COM", "GITHUB_APP_CUSTOM", "GIT_OTHER", "INLINE", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS"]
+                    }
+                  }
+                }
+              }
+            },
+            "iacInputData": {
+              "type": "object",
+              "required": ["schemaType", "data"],
+              "properties": {
+                "schemaType": { "type": "string" },
+                "data": { "type": "object" }
+              }
+            }
+          }
+        },
+        "TerraformConfig": {
+          "type": "object",
+          "properties": {
+            "terraformVersion": { "type": "string", "minLength": 1 },
+            "managedTerraformState": { "type": "boolean" },
+            "approvalPreApply": { "type": "boolean" }
+          }
+        },
+        "VCSTriggers": {
+          "type": ["object", "null"],
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "enum": ["GITHUB_COM", "GITHUB_APP_CUSTOM", "GITLAB_OAUTH_SSH", "BITBUCKET_ORG", "GITLAB_COM", "AZURE_DEVOPS", "AZURE_DEVOPS_SP"]
+            },
+            "tracked_branch": { "type": ["string", "null"] },
+            "approval_pre_apply": { "type": "boolean" },
+            "plan_only": { "type": "boolean" },
+            "gh_check": { "type": "boolean" },
+            "gl_pipeline": { "type": "boolean" },
+            "post_comments": { "type": "boolean" },
+            "file_triggers_enabled": { "type": "boolean" },
+            "file_trigger_patterns": { "type": "array", "items": { "type": "string" } },
+            "tags_regex": { "type": ["string", "null"] },
+            "push": { "type": "object" },
+            "pull_request_opened": { "type": "object" },
+            "pull_request_modified": { "type": "object" },
+            "all_pull_requests": { "type": "object" },
+            "create_tag": { "type": "object" }
+          }
+        }
+      }
+    }
+  }
+}

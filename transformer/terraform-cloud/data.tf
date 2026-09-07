@@ -17,3 +17,7 @@ data "tfe_variables" "data" {
 
   workspace_id = each.key
 }
+
+data "tfe_projects" "data" {
+  organization = var.tfOrg
+}

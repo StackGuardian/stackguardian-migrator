@@ -1,0 +1,76 @@
+# StackGuardian migration summary
+
+- Organization: ${summary.organization}
+- Workspaces processed: ${summary.workspaceCount}
+
+## Workflows per project
+%{ for project, count in summary.projectWorkspaceCounts ~}
+- ${project}: ${count}
+%{ endfor ~}
+
+## Skipped sensitive variables
+These are not migrated (TFC never returns sensitive values). Recreate them as SG secrets after import.
+%{ if length(summary.skippedSensitiveVars) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, vars in summary.skippedSensitiveVars ~}
+- ${ws}: ${join(", ", vars)}
+%{ endfor ~}
+%{ endif ~}
+
+## Stripped TFC-specific variables
+Not migrated because they only mean something inside Terraform Cloud (patterns: ${join(", ", summary.ignoreVarPatterns)}; set ignoreVarPatterns = [] to keep them).
+%{ if length(summary.strippedVars) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, vars in summary.strippedVars ~}
+- ${ws}: ${join(", ", vars)}
+%{ endfor ~}
+%{ endif ~}
+
+## Terraform version
+%{ if summary.terraformVersionSource == "preset" ~}
+No version is set on the migrated workflows (SGTerraformVersionSource = "preset"): StackGuardian applies the organisation's execution preset (Settings -> Runner groups -> Execution presets), or its platform default (managed Terraform 1.5.7) when none is configured. The workspaces ran these versions in TFC:
+%{ for ws, ver in summary.tfcTerraformVersions ~}
+- ${ws}: ${ver}
+%{ endfor ~}
+%{ else ~}
+Pinned TFC versions are carried over (SGTerraformVersionSource = "carry"). Workspaces whose version was not a pinned semver use %{ if summary.terraformVersionDefault == null }the organisation's execution preset (SGDefaultTerraformVersion = null)%{ else }the fallback ${summary.terraformVersionDefault}%{ endif }:
+%{ if length(summary.terraformVersionFallbacks) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, ver in summary.terraformVersionFallbacks ~}
+- ${ws}: reported "${ver}"
+%{ endfor ~}
+%{ endif ~}
+%{ endif ~}
+
+## Runners
+%{ if summary.runnerConstraintsSource == "preset" ~}
+- No runner constraints are set (SGDefaultRunnerConstraints = null); the organisation's execution preset decides (platform default: shared runners).
+%{ else ~}
+- Runner constraints come from terraform.tfvars (SGDefaultRunnerConstraints / workspaceOverrides).
+%{ endif ~}
+
+## Non-remote execution modes
+TFC may not hold state for these (local/agent execution); state export can be empty.
+%{ if length(summary.nonRemoteExecutionModes) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, mode in summary.nonRemoteExecutionModes ~}
+- ${ws}: ${mode}
+%{ endfor ~}
+%{ endif ~}
+
+## Renamed workspaces
+%{ if length(summary.renamedWorkspaces) == 0 ~}
+- None.
+%{ else ~}
+%{ for orig, new in summary.renamedWorkspaces ~}
+- ${orig} -> ${new}
+%{ endfor ~}
+%{ endif ~}
+
+## Reminders
+- ${summary.variableSetsReminder}
+- If state export ran, check state-export-failures.log in the export directory for workspaces whose state could not be pulled.

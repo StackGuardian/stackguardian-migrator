@@ -26,18 +26,26 @@
         "ERRORED": [] // list of emails to notify
       }
     },
-    "wfChaining": { "COMPLETED": [], "ERRORED": [] }
+    "wfChaining": {
+      "COMPLETED": [],
+      "ERRORED": []
+    }
   },
   "ResourceName": "", // workspace name
-  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}
+  "RunnerConstraints": {
+    "type": ""
+  }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}. Omit the whole key (SGDefaultRunnerConstraints = null) and StackGuardian applies the org's execution preset at import.
   "Tags": [], // workflow tags
   "TerraformConfig": {
     "managedTerraformState": true, // managed state from StackGuardian
-    "terraformVersion": "TERRAFORM-1.1.6" // version of terraform
+    "terraformVersion": "TERRAFORM-1.1.6" // version of terraform; omit the key (SGTerraformVersionSource = "preset", or a null fallback) and the org's execution preset decides. The API only fills keys that are absent, never null/"".
   },
   "UserSchedules": [],
   "VCSConfig": {
-    "iacInputData": { "data": {}, "schemaType": "RAW_JSON" }, // data key consists of key value pairs { "env1" : "secret} as terraform environment variables
+    "iacInputData": {
+      "data": {},
+      "schemaType": "RAW_JSON"
+    }, // data key consists of key value pairs { "env1" : "secret} as terraform environment variables
     "iacVCSConfig": {
       "customSource": {
         "config": {
@@ -53,5 +61,38 @@
       "useMarketplaceTemplate": false
     }
   },
-  "WfType": "TERRAFORM" // could be "TERRAFORM" or "CUSTOM"
+  "WfType": "TERRAFORM", // could be "TERRAFORM" or "CUSTOM"
+  "VCSTriggers": {
+    // Pre-configured VCS triggers, remapped from the workspace's TFC settings.
+    // Omit (or null) for no triggers. NOT applied by the bulk create API — the
+    // importer sets it in a second pass via POST .../wfs/<wf>/webhooks/vcs_triggers/
+    // which registers the repo webhook. Server-assigned fields (gh_webhook_url,
+    // *_hook_id, github_app_installation_id) are intentionally omitted.
+    "type": "GITHUB_COM", // GITHUB_COM, GITLAB_COM, BITBUCKET_ORG, AZURE_DEVOPS
+    "tracked_branch": "main",
+    "approval_pre_apply": true, // inverse of TFC auto_apply
+    "plan_only": false,
+    "gh_check": true,
+    "gl_pipeline": true,
+    "post_comments": true,
+    "push": {
+      "createWfRun": {
+        "enabled": true
+      }
+    }, // run on push to tracked branch
+    "pull_request_opened": {
+      "createWfRun": {
+        "enabled": true
+      }
+    }, // TFC speculative plan
+    "pull_request_modified": {
+      "createWfRun": {
+        "enabled": true
+      }
+    },
+    "file_triggers_enabled": true, // from TFC file_triggers_enabled
+    "file_trigger_patterns": [
+      "path/to/workdir/*"
+    ] // TFC trigger_patterns / trigger_prefixes / working_directory
+  }
 }
