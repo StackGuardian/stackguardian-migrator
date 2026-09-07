@@ -21,6 +21,8 @@ source "$SCRIPT_DIR/lib/sg_api.sh"
 source "$SCRIPT_DIR/lib/wizard.sh"
 # shellcheck source=lib/preflight.sh
 source "$SCRIPT_DIR/lib/preflight.sh"
+# shellcheck source=lib/state.sh
+source "$SCRIPT_DIR/lib/state.sh"
 
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
@@ -40,6 +42,9 @@ VCS_TRIGGERS=1
 SKIP_PREFLIGHT=0
 # shellcheck disable=SC2034
 PREFLIGHT_DONE=0
+FRESH=0
+PROJECT_FILTER=()
+WS_FILTER=()
 VERBOSE="${SG_VERBOSE:-0}"
 CONC="${SG_CONCURRENCY:-4}"
 TF_PARALLELISM="${SG_TF_PARALLELISM:-20}"
@@ -81,6 +86,9 @@ Options:
   --no-variable-sets Skip merging TFC Variable Set variables in the 'all' flow
   --no-vcs-triggers  Skip registering VCS triggers after import
   --skip-preflight   Skip the preflight checks (not recommended)
+  --fresh            Ignore the saved run state: redo every phase and re-import everything
+  --project SEG      Only handle this TFC project (repeatable; matches sg-payload.<SEG>.json)
+  --workspace NAME   Only handle this workspace (repeatable; apply exports only it)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
@@ -130,11 +138,54 @@ run_parallel() {
   return "$rc"
 }
 
+# payload_sha — hash of the current payload files (the input of enrich/convert/validate).
+payload_sha() {
+  payload_files
+  sg_sha_files ${PF[@]+"${PF[@]}"}
+}
+
+# run_phase <name> <input-sha> <fn> — in 'all', skip a phase that already ran
+# with identical inputs; otherwise run it and record the inputs it ran with.
+# Phases that rewrite the payloads (enrich, convert) record the post-run hash,
+# so an unchanged export is recognised on the next run.
+run_phase() {
+  local name="$1" sha="$2" fn="$3" at
+  if at="$(state_phase_done "$name" "$sha")" && [ -n "$at" ]; then
+    sg_log "skipping $name — unchanged since $at (--fresh to redo)"
+    return 0
+  fi
+  "$fn" || return $?
+  case "$name" in
+  apply) state_mark_phase "$name" "$sha" ;;
+  *) state_mark_phase "$name" "$(payload_sha)" ;;
+  esac
+}
+
 # Populate PF with the generated payload files.
 payload_files() {
+  local f seg keep
   shopt -s nullglob
   PF=("$EXPORT_DIR"/sg-payload.*.json)
   shopt -u nullglob
+  if [ "${#PROJECT_FILTER[@]}" -gt 0 ]; then
+    keep=()
+    for f in "${PF[@]}"; do
+      seg="$(seg_of "$f")"
+      case " ${PROJECT_FILTER[*]} " in *" $seg "*) keep+=("$f") ;; esac
+    done
+    PF=(${keep[@]+"${keep[@]}"})
+  fi
+}
+
+# ws_filter_json — the --workspace names as a JSON array (empty array = no filter).
+ws_filter_json() {
+  if [ "${#WS_FILTER[@]}" -eq 0 ]; then echo '[]'; else names_json "${WS_FILTER[@]}"; fi
+}
+
+# ws_selected <name> — exit 0 when no --workspace filter is set or it lists <name>.
+ws_selected() {
+  [ "${#WS_FILTER[@]}" -eq 0 ] && return 0
+  case " ${WS_FILTER[*]} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
 seg_of() {
@@ -210,6 +261,7 @@ do_set_triggers() {
       continue
     fi
     wf="$("$JQ_BIN" -r --argjson i "$i" '.[$i].ResourceName' "$f")"
+    ws_selected "$wf" || continue
     # A workflow that failed to import has nothing to attach triggers to.
     if ! sg_workflow_exists "$grp" "$wf"; then
       sg_warn "  $grp/$wf does not exist in SG (import failed?) — skipping triggers"
@@ -266,6 +318,7 @@ cmd_clean() {
   rm -rf "$TRANSFORMER_DIR/.terraform" "$TRANSFORMER_DIR/.terraform.lock.hcl" \
     "$TRANSFORMER_DIR/terraform.tfstate" "$TRANSFORMER_DIR/terraform.tfstate.backup"
   rm -rf "$SG_CACHE_DIR"
+  state_reset
   if [ "$PURGE" -eq 1 ]; then
     rm -f "$TFVARS" "$MAPPING"
     rm -rf "$SG_REPO_ROOT/.sg"
@@ -283,12 +336,18 @@ cmd_apply() {
   # both are on PATH for the apply (jq from cache if not already installed).
   command -v curl >/dev/null 2>&1 || die "curl is required for state export"
   local jqdir tflog rc=0
+  local -a tfvar_args=()
   jqdir="$(dirname "$(sg_resolve jq sg_ensure_jq)")"
+  if [ "${#WS_FILTER[@]}" -gt 0 ]; then
+    JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"
+    tfvar_args=(-var "workspacenames=$(ws_filter_json)")
+    sg_log "limiting apply to workspace(s): ${WS_FILTER[*]}"
+  fi
 
   if [ "$VERBOSE" -eq 1 ]; then
     (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 &&
       terraform init -input=false &&
-      terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars) || rc=$?
+      terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars "${tfvar_args[@]}") || rc=$?
   else
     # Quiet: capture terraform's verbose plan/output; surface only progress, the
     # final summary, and (on failure) the captured log.
@@ -298,7 +357,7 @@ cmd_apply() {
     if [ "$rc" -eq 0 ]; then
       sg_log "reading workspaces, generating payloads, exporting state..."
       (cd "$TRANSFORMER_DIR" && export PATH="$jqdir:$PATH" TF_IN_AUTOMATION=1 &&
-        terraform apply -auto-approve -compact-warnings -no-color -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars) >"$tflog" 2>&1 || rc=$?
+        terraform apply -auto-approve -compact-warnings -no-color -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars "${tfvar_args[@]}") >"$tflog" 2>&1 || rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
       sg_err "terraform failed (rc=$rc):"
@@ -374,12 +433,24 @@ names_json() { printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
 # the trigger pass see what was actually imported); each fallback is appended to
 # terraform-version-fallbacks.log. Any other per-workflow failure fails the file.
 do_import() {
-  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() name line tmp names
+  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() name line tmp names work all_names
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
+  # With --workspace, import only the selected workflows (a filtered copy).
+  work="$f"
+  if [ "${#WS_FILTER[@]}" -gt 0 ]; then
+    work="$(mktemp "$EXPORT_DIR/.subset.$seg.XXXXXX")"
+    "$JQ_BIN" --argjson names "$(ws_filter_json)" 'map(select(.ResourceName as $n | $names | index($n) != null))' "$f" >"$work"
+    if [ "$("$JQ_BIN" 'length' "$work")" -eq 0 ]; then
+      sg_log "$(basename "$f"): no selected workflows — skipped"
+      rm -f "$work"
+      return 0
+    fi
+  fi
   sg_log "importing $(basename "$f") -> $grp"
   out="$(mktemp)"
-  sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$f" "$out" || rc=1
+  sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$work" "$out" || rc=1
+  all_names="$("$JQ_BIN" -c '[.[].ResourceName]' "$work")"
 
   while IFS= read -r line; do
     if [[ "$line" =~ $TF_CEILING_RE ]]; then
@@ -418,6 +489,16 @@ do_import() {
     mv -f "$tmp.full" "$f"
     rm -f "$tmp"
   fi
+
+  [ "$work" != "$f" ] && rm -f "$work"
+
+  # Per-file result for the state file and the post-import checklist
+  # (run_parallel jobs run in subshells, so the caller merges these).
+  "$JQ_BIN" -nc --arg g "$grp" --arg sha "$(sg_sha_files "$f")" --argjson all "$all_names" \
+    --argjson failed "$([ "${#failed[@]}" -gt 0 ] && names_json "${failed[@]}" || echo '[]')" \
+    --argjson fallback "$([ "${#fb[@]}" -gt 0 ] && names_json "${fb[@]}" || echo '[]')" \
+    '{group: $g, payload_sha: $sha, imported: ($all - $failed), failed: $failed, tf_fallback: ($fallback - $failed)}' \
+    >"$EXPORT_DIR/.import-result.$seg.json"
 
   if [ "${#failed[@]}" -gt 0 ]; then
     sg_err "$(basename "$f"): ${#failed[@]} workflow(s) failed to import: ${failed[*]}"
@@ -520,12 +601,35 @@ cmd_import() {
   SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-$(tfvars_get '.SGDefaultTerraformVersion' TERRAFORM-1.5.7)}"
   rm -f "$EXPORT_DIR/terraform-version-fallbacks.log"
 
-  sg_log "importing ${#PF[@]} payload(s), up to $CONC in parallel (retries: $RETRIES)"
+  # Resume: skip payload files already imported in full with identical content
+  # (a changed payload or a previous failure re-imports the whole file;
+  # sg-cli updates existing workflows in place).
+  local -a todo=()
+  local skipped=0 seg
+  for f in "${PF[@]}"; do
+    seg="$(seg_of "$f")"
+    if [ "$FRESH" -eq 0 ] && [ "${#WS_FILTER[@]}" -eq 0 ] && state_import_done "$seg" "$(sg_sha_files "$f")"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    todo+=("$f")
+  done
+  [ "$skipped" -gt 0 ] && sg_log "skipping $skipped payload(s) already imported and unchanged (use --fresh to re-import)"
   local import_rc=0
-  run_parallel do_import "$CONC" "${PF[@]}" || import_rc=1
+  if [ "${#todo[@]}" -gt 0 ]; then
+    sg_log "importing ${#todo[@]} payload(s), up to $CONC in parallel (retries: $RETRIES)"
+    run_parallel do_import "$CONC" "${todo[@]}" || import_rc=1
+    for f in "${todo[@]}"; do
+      seg="$(seg_of "$f")"
+      if [ -f "$EXPORT_DIR/.import-result.$seg.json" ]; then
+        state_record_import "$seg" "$(cat "$EXPORT_DIR/.import-result.$seg.json")"
+        rm -f "$EXPORT_DIR/.import-result.$seg.json"
+      fi
+    done
+  fi
   tf_fallback_notice
   if [ "$import_rc" -eq 0 ]; then
-    sg_success "import complete (${#PF[@]} payload(s))"
+    sg_success "import complete (${#todo[@]} payload(s) imported, $skipped skipped)"
   else
     sg_err "one or more workflows failed to import (see above); VCS triggers are still registered for the ones that succeeded"
   fi
@@ -541,7 +645,7 @@ cmd_import() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers all clean completion"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --all -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -560,7 +664,7 @@ _sg_migrate() {
   case "\$prev" in
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
     --mapping) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
-    --org | --concurrency) COMPREPLY=(); return ;;
+    --org | --concurrency | --project | --workspace) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
   for w in "\${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
@@ -603,6 +707,9 @@ _sg_migrate() {
     '--no-variable-sets[Skip merging TFC Variable Sets]' \\
     '--no-vcs-triggers[Skip registering VCS triggers after import]' \\
     '--skip-preflight[Skip the preflight checks]' \\
+    '--fresh[Ignore saved run state: redo every phase]' \\
+    '*--project[Only this TFC project segment]:segment' \\
+    '*--workspace[Only this workspace]:name' \\
     '--all[With clean: also remove config]' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
@@ -651,6 +758,17 @@ while [ $# -gt 0 ]; do
   --no-variable-sets) ENRICH_VARSETS=0 ;;
   --no-vcs-triggers) VCS_TRIGGERS=0 ;;
   --skip-preflight) export SKIP_PREFLIGHT=1 ;;
+  --fresh) FRESH=1 ;;
+  --project)
+    PROJECT_FILTER+=("$2")
+    shift
+    ;;
+  --project=*) PROJECT_FILTER+=("${1#*=}") ;;
+  --workspace)
+    WS_FILTER+=("$2")
+    shift
+    ;;
+  --workspace=*) WS_FILTER+=("${1#*=}") ;;
   -v | --verbose) VERBOSE=1 ;;
   --all) PURGE=1 ;;
   -h | --help)
@@ -698,10 +816,12 @@ all)
   # Fail fast on everything the whole pipeline needs, before the (long) apply.
   export SG_API_TOKEN SG_BASE_URL
   preflight_run all
-  cmd_apply
-  if [ "$ENRICH_VARSETS" -eq 1 ]; then cmd_enrich; fi
-  cmd_convert
-  cmd_validate
+  [ "$FRESH" -eq 1 ] && { state_reset; sg_log "--fresh: previous run state discarded"; }
+  JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
+  run_phase apply "$(sg_sha "$(sg_sha_files "$TFVARS")|$(ws_filter_json)")" cmd_apply
+  if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$(payload_sha)" cmd_enrich; fi
+  run_phase convert "$(payload_sha)" cmd_convert
+  run_phase validate "$(payload_sha)" cmd_validate
   cmd_import
   ;;
 esac
