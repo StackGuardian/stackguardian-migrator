@@ -81,7 +81,7 @@ sg_workflow_exists() { [ "$(sg_http_code GET "$(wf_url "$1" "$2")")" = "200" ]; 
 sg_list_workflows() {
   local body
   if body="$(sg_api_get "$(sg_org_url)/wfgrps/$1/wfs/listall/" 2>/dev/null)"; then
-    printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(.msg // .data // [])[] | .ResourceName] | map(select(. != null))'
+    printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | .ResourceName] | map(select(. != null))'
   else
     echo '[]'
   fi
@@ -93,10 +93,11 @@ sg_patch_workflow() { sg_api_patch "$(wf_url "$1" "$2")" "$3"; }
 # --- integrations (connectors) --------------------------------------------
 
 # sg_list_integrations — [{name, type}, ...] for the org (fails on error).
+# The connector kind (GITHUB_COM, AWS_RBAC, ...) is Settings.kind in the API.
 sg_list_integrations() {
   local body
   body="$(sg_api_get "$(sg_org_url)/integrations/listall/")" || return $?
-  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(.msg // .data // [])[] | {name: .ResourceName, type: .ResourceType}] | map(select(.name != null))'
+  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | {name: (.ResourceName // .Id // ""), type: (.Settings.kind // .kind // .ResourceType // "")}] | map(select(.name != ""))'
 }
 
 # sg_integration_exists <name-or-/integrations/name> — exit 0 when it exists.
@@ -115,7 +116,7 @@ sg_runnergroup_exists() { [ "$(sg_http_code GET "$(sg_org_url)/runnergroups/$1/"
 sg_list_runnergroups() {
   local body
   body="$(sg_api_get "$(sg_org_url)/runnergroups/listall/" 2>/dev/null)" || return 1
-  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(.msg // .data // [])[] | .ResourceName] | map(select(. != null))'
+  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | .ResourceName] | map(select(. != null))'
 }
 
 # --- secrets ---------------------------------------------------------------
@@ -124,7 +125,7 @@ sg_list_runnergroups() {
 sg_secret_exists() {
   local body
   body="$(sg_api_get "$(sg_org_url)/secrets/listall/" 2>/dev/null)" || return 1
-  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -e --arg n "$1" '[(.msg // .data // [])[] | .ResourceName] | index($n) != null' >/dev/null
+  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -e --arg n "$1" '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | .ResourceName] | index($n) != null' >/dev/null
 }
 
 # sg_create_secret <name> <value> [description]

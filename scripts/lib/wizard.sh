@@ -122,7 +122,7 @@ wizard_sg() {
 
   # VCS connector -> integration id, source kind, repo prefix.
   vcs=""
-  [ "$W_SG_DISCOVERY" -eq 1 ] && vcs="$(printf '%s' "$ints" | "$jqb" -r '.[] | select(.type | test("^(GITHUB_COM|GITHUB_APP_CUSTOM|GITLAB_COM|BITBUCKET_ORG|AZURE_DEVOPS|GIT_OTHER)$")) | "\(.name)|\(.type)"')"
+  [ "$W_SG_DISCOVERY" -eq 1 ] && vcs="$(printf '%s' "$ints" | "$jqb" -r '.[] | select((.type // "") | test("^(GITHUB_COM|GITHUB_APP_CUSTOM|GITLAB_COM|BITBUCKET_ORG|AZURE_DEVOPS|GIT_OTHER)$")) | "\(.name)|\(.type)"')"
   if [ -n "$vcs" ]; then
     # shellcheck disable=SC2046
     pick="$(SG_SELECT_OTHER=1 sg_select "Which VCS connector should clone the repositories?" $(printf '%s\n' "$vcs" | tr '\n' ' '))" || return 1
@@ -142,7 +142,7 @@ wizard_sg() {
 
   # Cloud connector -> DeploymentPlatformConfig.
   cloud=""
-  [ "$W_SG_DISCOVERY" -eq 1 ] && cloud="$(printf '%s' "$ints" | "$jqb" -r '.[] | select(.type | test("^(AWS|AZURE|GCP)_")) | "\(.name)|\(.type)"')"
+  [ "$W_SG_DISCOVERY" -eq 1 ] && cloud="$(printf '%s' "$ints" | "$jqb" -r '.[] | select((.type // "") | test("^(AWS|AZURE|GCP)_")) | "\(.name)|\(.type)"')"
   if [ -n "$cloud" ]; then
     # shellcheck disable=SC2046
     pick="$(SG_SELECT_OTHER=1 sg_select "Which cloud connector should the workflows deploy with?" $(printf '%s\n' "$cloud" | tr '\n' ' ') "skip|decide later (leaves a placeholder to edit)")" || return 1
