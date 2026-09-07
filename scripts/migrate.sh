@@ -34,7 +34,7 @@ source "$SCRIPT_DIR/lib/checklist.sh"
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
 TRANSFORMER_DIR="$SG_REPO_ROOT/transformer/terraform-cloud"
-TFVARS="$TRANSFORMER_DIR/terraform.tfvars"
+TFVARS="${SG_TFVARS:-$TRANSFORMER_DIR/terraform.tfvars}"
 PROG="${SG_PROG:-$0}"
 EXPORT_DIR="${SG_EXPORT_DIR:-$SG_REPO_ROOT/export}"
 MAPPING="${SG_WFGROUP_MAP:-$SG_REPO_ROOT/.sg/workflow-groups.json}"
