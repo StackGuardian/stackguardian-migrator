@@ -36,6 +36,11 @@ SGDefaultDeploymentPlatformConfig = [
   }
 ]
 
+# Runners for every workflow: SG-hosted shared runners (default), or put all
+# workflows behind a private runner group:
+#   SGDefaultRunnerConstraints = { type = "private", names = ["sg-runner"] }
+SGDefaultRunnerConstraints = { type = "shared" }
+
 # Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
 SGDefaultSourceConfigDestKind = "GITHUB_COM"
 
