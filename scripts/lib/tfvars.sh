@@ -35,6 +35,17 @@ tfvars_get_json() {
 # tfvars_invalidate — forget the cached conversion (after writing the file).
 tfvars_invalidate() { _TFVARS_JSON=""; }
 
+# tfvars_valid — exit 0 when the file exists and hcl2json can parse it;
+# the parser's message is printed on stdout otherwise.
+tfvars_valid() {
+  [ -f "$TFVARS" ] || return 1
+  # shellcheck disable=SC2069  # stderr is the result; stdout (the JSON) is discarded
+  "$(sg_resolve hcl2json sg_ensure_hcl2json)" "$TFVARS" 2>&1 >/dev/null
+}
+
+# _tfvars_hcl <json> — pretty-print a JSON value so it reads like HCL in the file.
+_tfvars_hcl() { printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" --indent 2 '.' 2>/dev/null || printf '%s' "$1"; }
+
 # tfvars_write <dest> — render terraform.tfvars from W_* variables set by the
 # wizard (lists/objects are passed as compact JSON, which HCL accepts). Keeps
 # the same order and comments as terraform.tfvars.example so the file stays
@@ -80,11 +91,11 @@ SGDefaultIACVCSRepoPrefix = "$W_REPO_PREFIX"
 SGDefaultVCSAuthIntegrationID = "$W_VCS_INTEGRATION"
 
 # Cloud connector the workflows deploy with
-SGDefaultDeploymentPlatformConfig = $W_DPC_JSON
+SGDefaultDeploymentPlatformConfig = $(_tfvars_hcl "$W_DPC_JSON")
 
 # Runners for every workflow: { type = "shared" } for SG-hosted runners, or
 # { type = "private", names = ["<runner-group>"] } for a private runner group.
-SGDefaultRunnerConstraints = $W_RUNNER_JSON
+SGDefaultRunnerConstraints = $(_tfvars_hcl "$W_RUNNER_JSON")
 
 # Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER
 SGDefaultSourceConfigDestKind = "$W_DEST_KIND"
