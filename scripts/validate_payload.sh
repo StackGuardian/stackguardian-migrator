@@ -25,5 +25,5 @@ sg_log "validating $# file(s) against schema/sg-payload.schema.json"
 # Strip the repo-root prefix from its output for readable, relative paths
 # (pipefail off so the pipeline's status is sed's; yajsv's status via PIPESTATUS).
 set +o pipefail
-"$YAJSV_BIN" -s "$SCHEMA" "$@" 2>&1 | sed "s#${SG_REPO_ROOT}/##g"
+"$YAJSV_BIN" -s "$SCHEMA" "$@" 2>&1 | sed "s#${SG_REPO_ROOT}/##g" | awk '!seen[$0]++'
 exit "${PIPESTATUS[0]}"

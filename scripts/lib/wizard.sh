@@ -124,7 +124,7 @@ wizard_sg() {
 
   # VCS connector -> integration id, source kind, repo prefix.
   vcs=""
-  [ "$W_SG_DISCOVERY" -eq 1 ] && vcs="$(printf '%s' "$ints" | "$jqb" -r '.[] | select((.type // "") | test("^(GITHUB_COM|GITHUB_APP_CUSTOM|GITLAB_COM|BITBUCKET_ORG|AZURE_DEVOPS|GIT_OTHER)$")) | "\(.name)|\(.type)"')"
+  [ "$W_SG_DISCOVERY" -eq 1 ] && vcs="$(printf '%s' "$ints" | "$jqb" -r '[.[] | select((.type // "") | IN("GITHUB_COM","GITHUB_APP_CUSTOM","GITLAB_COM","GITLAB_OAUTH_SSH","BITBUCKET_ORG","AZURE_DEVOPS","AZURE_DEVOPS_SP","GIT_OTHER"))] | sort_by(.name) | .[] | "\(.name)|\(.type)"')"
   if [ -n "$vcs" ]; then
     # shellcheck disable=SC2046
     pick="$(SG_SELECT_OTHER=1 sg_select "Which VCS connector should clone the repositories?" $(printf '%s\n' "$vcs" | tr '\n' ' '))" || return 1
@@ -137,6 +137,8 @@ wizard_sg() {
   W_VCS_INTEGRATION="/integrations/${pick#/integrations/}"
   case "$kind" in
   GITHUB_APP_CUSTOM) W_DEST_KIND=GITHUB_COM ;;
+  GITLAB_OAUTH_SSH) W_DEST_KIND=GITLAB_COM ;;
+  AZURE_DEVOPS_SP) W_DEST_KIND=AZURE_DEVOPS ;;
   GITHUB_COM | GITLAB_COM | BITBUCKET_ORG | AZURE_DEVOPS | GIT_OTHER) W_DEST_KIND="$kind" ;;
   *) W_DEST_KIND="$(sg_select "VCS provider kind" GITHUB_COM GITLAB_COM BITBUCKET_ORG AZURE_DEVOPS GIT_OTHER)" || return 1 ;;
   esac
@@ -145,7 +147,8 @@ wizard_sg() {
 
   # Cloud connector -> DeploymentPlatformConfig.
   cloud=""
-  [ "$W_SG_DISCOVERY" -eq 1 ] && cloud="$(printf '%s' "$ints" | "$jqb" -r '.[] | select((.type // "") | test("^(AWS|AZURE|GCP)_")) | "\(.name)|\(.type)"')"
+  # Only kinds DeploymentPlatformConfig accepts (AZURE_DEVOPS* are VCS connectors).
+  [ "$W_SG_DISCOVERY" -eq 1 ] && cloud="$(printf '%s' "$ints" | "$jqb" -r '[.[] | select((.type // "") | IN("AWS_STATIC","AWS_RBAC","AWS_OIDC","AZURE_STATIC","AZURE_OIDC","AZURE_MANAGED_ID_OIDC","GCP_STATIC","GCP_OIDC"))] | sort_by(.name) | .[] | "\(.name)|\(.type)"')"
   if [ -n "$cloud" ]; then
     # shellcheck disable=SC2046
     pick="$(SG_SELECT_OTHER=1 sg_select "Which cloud connector should the workflows deploy with?" $(printf '%s\n' "$cloud" | tr '\n' ' ') "skip|decide later (leaves a placeholder to edit)")" || return 1
@@ -169,7 +172,7 @@ wizard_sg() {
     "private|a private runner group in your own network")" || return 1
   if [ "$runner" = "private" ]; then
     groups=""
-    [ "$W_SG_DISCOVERY" -eq 1 ] && groups="$(sg_list_runnergroups 2>/dev/null | "$jqb" -r '.[]' 2>/dev/null || true)"
+    [ "$W_SG_DISCOVERY" -eq 1 ] && groups="$(sg_list_runnergroups 2>/dev/null | "$jqb" -r 'sort | .[]' 2>/dev/null || true)"
     if [ -n "$groups" ]; then
       # shellcheck disable=SC2046
       name="$(SG_SELECT_OTHER=1 sg_select "Which runner group?" $(printf '%s\n' "$groups" | tr '\n' ' '))" || return 1

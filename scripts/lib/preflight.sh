@@ -137,6 +137,13 @@ preflight_config() {
   GITHUB_COM | GITHUB_APP_CUSTOM | GIT_OTHER | INLINE | BITBUCKET_ORG | GITLAB_COM | AZURE_DEVOPS) pf_ok "SGDefaultSourceConfigDestKind = $v" ;;
   *) pf_fail "SGDefaultSourceConfigDestKind '$v' is not one of GITHUB_COM, GITLAB_COM, BITBUCKET_ORG, AZURE_DEVOPS, GIT_OTHER" ;;
   esac
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    case "$v" in
+    AWS_STATIC | AWS_RBAC | AWS_OIDC | AZURE_STATIC | AZURE_OIDC | AZURE_MANAGED_ID_OIDC | GCP_STATIC | GCP_OIDC) pf_ok "DeploymentPlatformConfig kind $v" ;;
+    *) pf_fail "DeploymentPlatformConfig kind '$v' is not a cloud connector kind (AWS_STATIC, AWS_RBAC, AWS_OIDC, AZURE_STATIC, AZURE_OIDC, AZURE_MANAGED_ID_OIDC, GCP_STATIC, GCP_OIDC) — a VCS connector was picked as the cloud connector?" ;;
+    esac
+  done < <(tfvars_json | "$jqb" -r '[ (.SGDefaultDeploymentPlatformConfig // [])[]?.kind, ((.workspaceOverrides // {}) | to_entries[]? | .value.DeploymentPlatformConfig // [] | .[]?.kind) ] | map(select(. != null)) | unique | .[]')
   v="$(tfvars_get .SGDefaultTerraformVersion TERRAFORM-1.5.7)"
   if [[ "$v" =~ ^TERRAFORM-([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
     if [ "$(printf '%03d%03d%03d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")" -gt "001005007" ]; then
