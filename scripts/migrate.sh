@@ -27,6 +27,8 @@ source "$SCRIPT_DIR/lib/state.sh"
 source "$SCRIPT_DIR/lib/report.sh"
 # shellcheck source=lib/errors.sh
 source "$SCRIPT_DIR/lib/errors.sh"
+# shellcheck source=lib/checklist.sh
+source "$SCRIPT_DIR/lib/checklist.sh"
 
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
@@ -48,6 +50,7 @@ SKIP_PREFLIGHT=0
 PREFLIGHT_DONE=0
 FRESH=0
 DRY_RUN=0
+SECRET_STUBS=1
 PROJECT_FILTER=()
 WS_FILTER=()
 VERBOSE="${SG_VERBOSE:-0}"
@@ -72,6 +75,8 @@ Commands:
   import      Import each payload to StackGuardian (parallel, with confirmation),
               then register VCS triggers (unless --no-vcs-triggers)
   triggers    Register VCS triggers for already-imported workflows (second pass)
+  checklist   Create placeholder secrets for skipped sensitive variables and write
+              export/post-import-checklist.md (runs automatically after import)
   all         apply -> enrich -> convert -> validate -> import
   clean       Remove local working artifacts for a fresh start (export/, TF state,
               tool cache). Add --all to also remove config (terraform.tfvars, mapping).
@@ -92,6 +97,7 @@ Options:
   --no-vcs-triggers  Skip registering VCS triggers after import
   --skip-preflight   Skip the preflight checks (not recommended)
   --dry-run          With 'import': show the per-workflow plan and stop (nothing is created)
+  --no-secret-stubs  Do not create placeholder SG secrets for sensitive variables
   --fresh            Ignore the saved run state: redo every phase and re-import everything
   --project SEG      Only handle this TFC project (repeatable; matches sg-payload.<SEG>.json)
   --workspace NAME   Only handle this workspace (repeatable; apply exports only it)
@@ -105,6 +111,7 @@ Environment:
   SG_ORG             StackGuardian org (alternative to --org)
   SG_RETRIES         Import retry attempts on failure (default: 4)
   SG_TF_PARALLELISM  terraform apply -parallelism (default: 20)
+  SG_UI_URL          StackGuardian UI base for checklist links (default: https://app.stackguardian.io)
 EOF
 }
 
@@ -257,7 +264,7 @@ group_for() {
 # straight from the (converted) payload. Per-workflow failures are surfaced but
 # do not abort the rest of the file.
 do_set_triggers() {
-  local f="$1" seg grp n i wf body rc=0 set=0 skip=0
+  local f="$1" seg grp n i wf body rc=0 set=0 skip=0 ok=() failed=() missing=()
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   n="$("$JQ_BIN" 'length' "$f")"
@@ -271,6 +278,7 @@ do_set_triggers() {
     # A workflow that failed to import has nothing to attach triggers to.
     if ! sg_workflow_exists "$grp" "$wf"; then
       sg_warn "  $grp/$wf does not exist in SG (import failed?) — skipping triggers"
+      missing+=("$wf")
       rc=1
       continue
     fi
@@ -278,12 +286,19 @@ do_set_triggers() {
     if SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- \
       sg_api_post "$(wf_triggers_endpoint "$grp" "$wf")" "$body"; then
       set=$((set + 1))
+      ok+=("$wf")
     else
       sg_warn "  vcs triggers failed: $grp/$wf"
+      failed+=("$wf")
       rc=1
     fi
   done
   sg_log "$(basename "$f"): set triggers on $set workflow(s) (skipped $skip without triggers)"
+  "$JQ_BIN" -nc --arg g "$grp" \
+    --argjson ok "$([ "${#ok[@]}" -gt 0 ] && names_json "${ok[@]}" || echo '[]')" \
+    --argjson failed "$([ "${#failed[@]}" -gt 0 ] && names_json "${failed[@]}" || echo '[]')" \
+    --argjson missing "$([ "${#missing[@]}" -gt 0 ] && names_json "${missing[@]}" || echo '[]')" \
+    '{group: $g, set: $ok, failed: $failed, missing: $missing}' >"$EXPORT_DIR/.triggers-result.$seg.json"
   return "$rc"
 }
 
@@ -297,7 +312,16 @@ set_triggers_pass() {
     return 0
   fi
   sg_log "registering VCS triggers for $total workflow(s), up to $CONC in parallel (retries: $RETRIES)"
-  if run_parallel do_set_triggers "$CONC" "${PF[@]}"; then
+  local rc=0 f seg
+  run_parallel do_set_triggers "$CONC" "${PF[@]}" || rc=1
+  for f in "${PF[@]}"; do
+    seg="$(seg_of "$f")"
+    if [ -f "$EXPORT_DIR/.triggers-result.$seg.json" ]; then
+      state_update '.triggers[$s] = ($r + {at: $at})' --arg s "$seg" --argjson r "$(cat "$EXPORT_DIR/.triggers-result.$seg.json")" --arg at "$(state_now)"
+      rm -f "$EXPORT_DIR/.triggers-result.$seg.json"
+    fi
+  done
+  if [ "$rc" -eq 0 ]; then
     sg_success "vcs triggers registered"
   else
     sg_err "one or more VCS trigger registrations failed (re-run: $PROG triggers)"
@@ -655,13 +679,15 @@ cmd_import() {
   if [ "$VCS_TRIGGERS" -eq 1 ]; then
     set_triggers_pass || import_rc=1
   fi
+  [ "$SECRET_STUBS" -eq 1 ] && create_secret_stubs
+  write_checklist
   return "$import_rc"
 }
 
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
-SG_COMMANDS="init preflight apply enrich convert validate import triggers all clean completion"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
+SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion"
+SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -710,6 +736,7 @@ _sg_migrate() {
     'validate:Validate payloads against the SG schema'
     'import:Import payloads to StackGuardian, then register VCS triggers'
     'triggers:Register VCS triggers for already-imported workflows'
+    'checklist:Write the post-import checklist (and create secret stubs)'
     'all:apply -> enrich -> convert -> validate -> import'
     'clean:Remove local working artifacts'
     'completion:Print a shell completion script'
@@ -724,6 +751,7 @@ _sg_migrate() {
     '--no-vcs-triggers[Skip registering VCS triggers after import]' \\
     '--skip-preflight[Skip the preflight checks]' \\
     '--dry-run[With import: show the plan and stop]' \\
+    '--no-secret-stubs[Do not create placeholder SG secrets for sensitive vars]' \\
     '--fresh[Ignore saved run state: redo every phase]' \\
     '*--project[Only this TFC project segment]:segment' \\
     '*--workspace[Only this workspace]:name' \\
@@ -777,6 +805,7 @@ while [ $# -gt 0 ]; do
   --skip-preflight) export SKIP_PREFLIGHT=1 ;;
   --fresh) FRESH=1 ;;
   --dry-run) DRY_RUN=1 ;;
+  --no-secret-stubs) SECRET_STUBS=0 ;;
   --project)
     PROJECT_FILTER+=("$2")
     shift
@@ -793,7 +822,7 @@ while [ $# -gt 0 ]; do
     usage
     exit 0
     ;;
-  init | apply | enrich | convert | validate | import | triggers | all | clean | preflight) CMD="$1" ;;
+  init | apply | enrich | convert | validate | import | triggers | all | clean | preflight | checklist) CMD="$1" ;;
   completion)
     cmd_completion "${2:-}"
     exit 0
@@ -826,6 +855,7 @@ preflight)
   export SG_API_TOKEN SG_BASE_URL
   cmd_preflight
   ;;
+checklist) cmd_checklist ;;
 all)
   if [ ! -f "$TFVARS" ]; then
     cmd_init

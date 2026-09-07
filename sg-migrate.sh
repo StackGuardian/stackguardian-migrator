@@ -33,7 +33,7 @@ HAS_CMD=0
 for a in ${ARGS[@]+"${ARGS[@]}"}; do
   case "$a" in
   clean | completion | -h | --help) NATIVE=1; HAS_CMD=1 ;;
-  init | preflight | apply | enrich | convert | validate | import | triggers | all) HAS_CMD=1 ;;
+  init | preflight | apply | enrich | convert | validate | import | triggers | checklist | all) HAS_CMD=1 ;;
   esac
 done
 [ "$HAS_CMD" -eq 1 ] || NATIVE=1
