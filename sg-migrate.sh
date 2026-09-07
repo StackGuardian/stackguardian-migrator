@@ -27,9 +27,9 @@ for a in "$@"; do
   esac
 done
 
-# 'clean' only touches the local filesystem — no container needed.
+# 'clean' and 'completion' only touch the local shell/filesystem — no container.
 for a in ${ARGS[@]+"${ARGS[@]}"}; do
-  [ "$a" = "clean" ] && NATIVE=1
+  case "$a" in clean | completion) NATIVE=1 ;; esac
 done
 
 if [ "$NATIVE" = "1" ] || ! command -v docker >/dev/null 2>&1; then
