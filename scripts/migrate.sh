@@ -19,6 +19,8 @@ source "$SCRIPT_DIR/lib/tfc_api.sh"
 source "$SCRIPT_DIR/lib/sg_api.sh"
 # shellcheck source=lib/wizard.sh
 source "$SCRIPT_DIR/lib/wizard.sh"
+# shellcheck source=lib/preflight.sh
+source "$SCRIPT_DIR/lib/preflight.sh"
 
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
@@ -34,6 +36,10 @@ PURGE=0
 CREATE_GROUPS=1
 ENRICH_VARSETS=1
 VCS_TRIGGERS=1
+# shellcheck disable=SC2034  # consumed by lib/preflight.sh
+SKIP_PREFLIGHT=0
+# shellcheck disable=SC2034
+PREFLIGHT_DONE=0
 VERBOSE="${SG_VERBOSE:-0}"
 CONC="${SG_CONCURRENCY:-4}"
 TF_PARALLELISM="${SG_TF_PARALLELISM:-20}"
@@ -46,7 +52,9 @@ usage() {
 Usage: $PROG [options] <command>
 
 Commands:
-  init        Create terraform.tfvars from the template
+  init        Guided setup: discovers TFC/SG resources and writes terraform.tfvars
+  preflight   Verify tokens and every connector/runner/org referenced in tfvars
+              (runs automatically before apply, import and all)
   apply       Run the transformer (terraform apply) to generate payloads + state
   enrich      Merge TFC Variable Set variables into the payloads (via the TFC API)
   convert     Convert HCL-string variables to JSON in each payload (parallel)
@@ -72,6 +80,7 @@ Options:
   --no-create-groups Do not create missing workflow groups; require them to exist
   --no-variable-sets Skip merging TFC Variable Set variables in the 'all' flow
   --no-vcs-triggers  Skip registering VCS triggers after import
+  --skip-preflight   Skip the preflight checks (not recommended)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
@@ -268,8 +277,8 @@ cmd_clean() {
 cmd_apply() {
   sg_step "Phase: apply (terraform)"
   command -v terraform >/dev/null 2>&1 || die "terraform not found on PATH"
-  [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init (then edit it)."
-  require_tfc_auth
+  [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init"
+  preflight_run apply
   # State export (TFC API) calls curl + jq from terraform's local-exec; make sure
   # both are on PATH for the apply (jq from cache if not already installed).
   command -v curl >/dev/null 2>&1 || die "curl is required for state export"
@@ -445,6 +454,7 @@ cmd_import() {
   # so the sg-cli child process inherits the same target.
   export SG_API_TOKEN SG_BASE_URL
   JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
+  preflight_run import
 
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR")."
@@ -530,8 +540,8 @@ cmd_import() {
 
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
-SG_COMMANDS="init apply enrich convert validate import triggers all clean completion"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --all -v --verbose -y --yes -h --help --native --local --build"
+SG_COMMANDS="init preflight apply enrich convert validate import triggers all clean completion"
+SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -572,7 +582,8 @@ BASH
 _sg_migrate() {
   local -a cmds
   cmds=(
-    'init:Create terraform.tfvars from the template'
+    'init:Guided setup — generates terraform.tfvars'
+    'preflight:Verify tokens and every id in terraform.tfvars before running'
     'apply:Run the transformer (terraform apply)'
     'enrich:Merge TFC Variable Set variables into the payloads'
     'convert:Convert HCL-string variables to JSON'
@@ -591,6 +602,7 @@ _sg_migrate() {
     '--no-create-groups[Require workflow groups to pre-exist]' \\
     '--no-variable-sets[Skip merging TFC Variable Sets]' \\
     '--no-vcs-triggers[Skip registering VCS triggers after import]' \\
+    '--skip-preflight[Skip the preflight checks]' \\
     '--all[With clean: also remove config]' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
@@ -638,13 +650,14 @@ while [ $# -gt 0 ]; do
   --no-create-groups) CREATE_GROUPS=0 ;;
   --no-variable-sets) ENRICH_VARSETS=0 ;;
   --no-vcs-triggers) VCS_TRIGGERS=0 ;;
+  --skip-preflight) export SKIP_PREFLIGHT=1 ;;
   -v | --verbose) VERBOSE=1 ;;
   --all) PURGE=1 ;;
   -h | --help)
     usage
     exit 0
     ;;
-  init | apply | enrich | convert | validate | import | triggers | all | clean) CMD="$1" ;;
+  init | apply | enrich | convert | validate | import | triggers | all | clean | preflight) CMD="$1" ;;
   completion)
     cmd_completion "${2:-}"
     exit 0
@@ -673,15 +686,18 @@ convert) cmd_convert ;;
 validate) cmd_validate ;;
 import) cmd_import ;;
 triggers) cmd_triggers ;;
+preflight)
+  export SG_API_TOKEN SG_BASE_URL
+  cmd_preflight
+  ;;
 all)
   if [ ! -f "$TFVARS" ]; then
     cmd_init
     die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
   fi
-  # Fail fast on prerequisites before the (long) apply.
-  require_tfc_auth
-  [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set (needed for import)."
-  [ -n "$ORG" ] || die "StackGuardian org not set (use --org or SG_ORG)."
+  # Fail fast on everything the whole pipeline needs, before the (long) apply.
+  export SG_API_TOKEN SG_BASE_URL
+  preflight_run all
   cmd_apply
   if [ "$ENRICH_VARSETS" -eq 1 ]; then cmd_enrich; fi
   cmd_convert
