@@ -23,6 +23,8 @@ source "$SCRIPT_DIR/lib/wizard.sh"
 source "$SCRIPT_DIR/lib/preflight.sh"
 # shellcheck source=lib/state.sh
 source "$SCRIPT_DIR/lib/state.sh"
+# shellcheck source=lib/report.sh
+source "$SCRIPT_DIR/lib/report.sh"
 
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
@@ -43,6 +45,7 @@ SKIP_PREFLIGHT=0
 # shellcheck disable=SC2034
 PREFLIGHT_DONE=0
 FRESH=0
+DRY_RUN=0
 PROJECT_FILTER=()
 WS_FILTER=()
 VERBOSE="${SG_VERBOSE:-0}"
@@ -86,6 +89,7 @@ Options:
   --no-variable-sets Skip merging TFC Variable Set variables in the 'all' flow
   --no-vcs-triggers  Skip registering VCS triggers after import
   --skip-preflight   Skip the preflight checks (not recommended)
+  --dry-run          With 'import': show the per-workflow plan and stop (nothing is created)
   --fresh            Ignore the saved run state: redo every phase and re-import everything
   --project SEG      Only handle this TFC project (repeatable; matches sg-payload.<SEG>.json)
   --workspace NAME   Only handle this workspace (repeatable; apply exports only it)
@@ -370,6 +374,7 @@ cmd_apply() {
 
   [ "$rc" -eq 0 ] || return "$rc"
   sg_success "apply complete — payloads in $(sg_rel "$EXPORT_DIR")"
+  show_migration_summary
 }
 
 cmd_enrich() {
@@ -583,6 +588,15 @@ cmd_import() {
     die "some groups are missing (override groups are not auto-created; create them or remove the override)."
   fi
 
+  # Fallback Terraform version for workflows the API rejects as above the
+  # managed ceiling: SGDefaultTerraformVersion from terraform.tfvars, else 1.5.7.
+  SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-$(tfvars_get '.SGDefaultTerraformVersion' TERRAFORM-1.5.7)}"
+  show_import_plan "${PF[@]}"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    sg_success "dry run — nothing was created or changed"
+    return 0
+  fi
+
   if [ "$ASSUME_YES" -ne 1 ]; then
     printf '%sProceed?%s This imports to %s and creates any "create" groups. [y/N] ' "$C_BOLD$C_YELLOW" "$C_RESET" "$ORG" >&2
     read -r ans || ans=""
@@ -596,9 +610,6 @@ cmd_import() {
   done
 
   SGCLI_BIN="$(sg_resolve sg-cli sg_ensure_sgcli)"
-  # Fallback Terraform version for workflows the API rejects as above the
-  # managed ceiling: SGDefaultTerraformVersion from terraform.tfvars, else 1.5.7.
-  SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-$(tfvars_get '.SGDefaultTerraformVersion' TERRAFORM-1.5.7)}"
   rm -f "$EXPORT_DIR/terraform-version-fallbacks.log"
 
   # Resume: skip payload files already imported in full with identical content
@@ -645,7 +656,7 @@ cmd_import() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers all clean completion"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -707,6 +718,7 @@ _sg_migrate() {
     '--no-variable-sets[Skip merging TFC Variable Sets]' \\
     '--no-vcs-triggers[Skip registering VCS triggers after import]' \\
     '--skip-preflight[Skip the preflight checks]' \\
+    '--dry-run[With import: show the plan and stop]' \\
     '--fresh[Ignore saved run state: redo every phase]' \\
     '*--project[Only this TFC project segment]:segment' \\
     '*--workspace[Only this workspace]:name' \\
@@ -759,6 +771,7 @@ while [ $# -gt 0 ]; do
   --no-vcs-triggers) VCS_TRIGGERS=0 ;;
   --skip-preflight) export SKIP_PREFLIGHT=1 ;;
   --fresh) FRESH=1 ;;
+  --dry-run) DRY_RUN=1 ;;
   --project)
     PROJECT_FILTER+=("$2")
     shift
