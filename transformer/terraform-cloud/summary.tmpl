@@ -28,14 +28,28 @@ Not migrated because they only mean something inside Terraform Cloud (patterns: 
 %{ endfor ~}
 %{ endif ~}
 
-## Terraform version fallbacks
-Workspaces whose version was not a pinned semver; the configured SGDefaultTerraformVersion was used.
+## Terraform version
+%{ if summary.terraformVersionSource == "preset" ~}
+No version is set on the migrated workflows (SGTerraformVersionSource = "preset"): StackGuardian applies the organisation's execution preset (Settings -> Runner groups -> Execution presets), or its platform default (managed Terraform 1.5.7) when none is configured. The workspaces ran these versions in TFC:
+%{ for ws, ver in summary.tfcTerraformVersions ~}
+- ${ws}: ${ver}
+%{ endfor ~}
+%{ else ~}
+Pinned TFC versions are carried over (SGTerraformVersionSource = "carry"). Workspaces whose version was not a pinned semver use %{ if summary.terraformVersionDefault == null }the organisation's execution preset (SGDefaultTerraformVersion = null)%{ else }the fallback ${summary.terraformVersionDefault}%{ endif }:
 %{ if length(summary.terraformVersionFallbacks) == 0 ~}
 - None.
 %{ else ~}
 %{ for ws, ver in summary.terraformVersionFallbacks ~}
 - ${ws}: reported "${ver}"
 %{ endfor ~}
+%{ endif ~}
+%{ endif ~}
+
+## Runners
+%{ if summary.runnerConstraintsSource == "preset" ~}
+- No runner constraints are set (SGDefaultRunnerConstraints = null); the organisation's execution preset decides (platform default: shared runners).
+%{ else ~}
+- Runner constraints come from terraform.tfvars (SGDefaultRunnerConstraints / workspaceOverrides).
 %{ endif ~}
 
 ## Non-remote execution modes

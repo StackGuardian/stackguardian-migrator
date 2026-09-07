@@ -42,11 +42,39 @@ locals {
   }
 
   # Workspaces whose terraform_version is not a pinned semver (e.g. "latest" or
-  # a constraint) and have no per-workspace override fall back to the default.
+  # a constraint) and have no per-workspace override fall back to the default
+  # (SGDefaultTerraformVersion, or the org's execution preset when that is null).
   versionFallbacks = {
     for name in local.workflowNames :
     name => data.tfe_workspace.data[name].terraform_version
     if !can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", data.tfe_workspace.data[name].terraform_version)) && try(var.workspaceOverrides[name].terraformVersion, null) == null
+  }
+
+  # Terraform version sent per workflow. An override is always sent as-is.
+  # Otherwise "carry" keeps a pinned TFC semver (TERRAFORM-x.y.z) and falls back
+  # to SGDefaultTerraformVersion for anything else; "preset" (or a null default)
+  # yields null, and the key is then left out of the payload so StackGuardian
+  # fills it from the org's execution preset at import time.
+  tfVersion = {
+    for name in local.workflowNames :
+    name => (
+      try(var.workspaceOverrides[name].terraformVersion, null) != null ? var.workspaceOverrides[name].terraformVersion :
+      var.SGTerraformVersionSource == "preset" ? null :
+      can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", data.tfe_workspace.data[name].terraform_version)) ? "TERRAFORM-${data.tfe_workspace.data[name].terraform_version}" :
+      var.SGDefaultTerraformVersion
+    )
+  }
+
+  # Runner constraints sent per workflow: override, else the global default,
+  # else null (key left out, the execution preset decides). Picked via a tuple
+  # rather than a conditional: an override with "names" and a default without
+  # it are different object types, which a conditional refuses to unify.
+  runnerConstraints = {
+    for name in local.workflowNames :
+    name => try([for c in [
+      try(var.workspaceOverrides[name].RunnerConstraints, null),
+      var.SGDefaultRunnerConstraints == null ? null : { for k, v in var.SGDefaultRunnerConstraints : k => v if v != null }
+    ] : c if c != null][0], null)
   }
 
   # Workspaces not using "remote" execution may not store their state in TFC, so
@@ -67,7 +95,7 @@ locals {
   # One SG workflow payload per workspace. Per-workspace overrides win over the
   # SGDefault* values; everything else is derived from the TFC workspace.
   workflowPayload = {
-    for wsName, wsId in data.tfe_workspace_ids.data.ids : wsName => {
+    for wsName, wsId in data.tfe_workspace_ids.data.ids : wsName => merge({
       CLIConfiguration = {
         "WorkflowGroup" : {
           # SG workflow group per TFC project: tfc-<project> (matches the group
@@ -87,7 +115,6 @@ locals {
       )
 
       DeploymentPlatformConfig = try(var.workspaceOverrides[wsName].DeploymentPlatformConfig, null) != null ? var.workspaceOverrides[wsName].DeploymentPlatformConfig : var.SGDefaultDeploymentPlatformConfig
-      RunnerConstraints        = try(var.workspaceOverrides[wsName].RunnerConstraints, null) != null ? var.workspaceOverrides[wsName].RunnerConstraints : { for k, v in var.SGDefaultRunnerConstraints : k => v if v != null }
 
       VCSConfig = {
         "iacVCSConfig" : {
@@ -166,18 +193,18 @@ locals {
 
       Approvers = try(var.workspaceOverrides[wsName].Approvers, null) != null ? var.workspaceOverrides[wsName].Approvers : (data.tfe_workspace.data[wsName].auto_apply ? [] : var.SGDefaultWfApprovers)
 
-      TerraformConfig = {
+      # terraformVersion is omitted (not null) when the execution preset should
+      # decide: the SG API only fills in keys that are absent from the payload.
+      TerraformConfig = { for k, v in {
         "managedTerraformState" : true,
-        "terraformVersion" : (
-          try(var.workspaceOverrides[wsName].terraformVersion, null) != null ? var.workspaceOverrides[wsName].terraformVersion :
-          can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", data.tfe_workspace.data[wsName].terraform_version)) ? "TERRAFORM-${data.tfe_workspace.data[wsName].terraform_version}" : var.SGDefaultTerraformVersion
-        ),
+        "terraformVersion" : local.tfVersion[wsName],
         "approvalPreApply" : !data.tfe_workspace.data[wsName].auto_apply
-      }
+      } : k => v if v != null }
 
       WfType        = "TERRAFORM"
       UserSchedules = []
-    }
+      # RunnerConstraints likewise: present only when we have a value to send.
+    }, { for k, v in { RunnerConstraints = local.runnerConstraints[wsName] } : k => v if v != null })
   }
 
   # Group payloads by TFC project so each project imports into its own SG
@@ -198,13 +225,18 @@ locals {
 
   # Machine-readable migration summary (also rendered to markdown).
   summary = {
-    organization              = var.tfOrg
-    workspaceCount            = length(local.workflowNames)
-    projectWorkspaceCounts    = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
-    skippedSensitiveVars      = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
-    strippedVars              = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
-    ignoreVarPatterns         = var.ignoreVarPatterns
-    terraformVersionFallbacks = local.versionFallbacks
+    organization           = var.tfOrg
+    workspaceCount         = length(local.workflowNames)
+    projectWorkspaceCounts = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
+    skippedSensitiveVars   = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
+    strippedVars           = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
+    ignoreVarPatterns      = var.ignoreVarPatterns
+    # Version policy, so the later phases can explain what each workflow runs.
+    terraformVersionSource    = var.SGTerraformVersionSource
+    terraformVersionDefault   = var.SGDefaultTerraformVersion # null = the execution preset decides
+    runnerConstraintsSource   = var.SGDefaultRunnerConstraints == null ? "preset" : "config"
+    tfcTerraformVersions      = { for name in local.workflowNames : name => data.tfe_workspace.data[name].terraform_version }
+    terraformVersionFallbacks = var.SGTerraformVersionSource == "carry" ? local.versionFallbacks : {}
     nonRemoteExecutionModes   = local.nonRemoteModes
     renamedWorkspaces         = { for name in local.workflowNames : name => local.resourceNames[name] if local.resourceNames[name] != name }
     variableSetsReminder      = "TFC Variable Set variables are merged by the 'enrich' step (non-sensitive only). Sensitive set vars can't be read from the API — recreate them as SG secrets; see the enrich step output."

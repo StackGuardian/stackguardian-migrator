@@ -79,17 +79,18 @@ variable "SGDefaultDeploymentPlatformConfig" {
 
 variable "SGDefaultRunnerConstraints" {
   default     = { type = "shared" }
-  description = "Runner constraints applied to every workflow. Use { type = \"shared\" } for SG-hosted runners, or { type = \"private\", names = [\"<runner-group>\"] } to put every workflow behind a private runner group. Override per workspace via workspaceOverrides[name].RunnerConstraints."
+  nullable    = true
+  description = "Runner constraints applied to every workflow. Use { type = \"shared\" } for SG-hosted runners, { type = \"private\", names = [\"<runner-group>\"] } to put every workflow behind a private runner group, or null to send no runner constraints at all so StackGuardian applies the org's execution preset (Settings -> Runner groups -> Execution presets; platform default: shared runners). Override per workspace via workspaceOverrides[name].RunnerConstraints."
   type = object({
     type  = string
     names = optional(list(string))
   })
   validation {
-    condition     = contains(["shared", "private"], var.SGDefaultRunnerConstraints.type)
-    error_message = "SGDefaultRunnerConstraints.type must be \"shared\" or \"private\"."
+    condition     = var.SGDefaultRunnerConstraints == null || contains(["shared", "private"], try(var.SGDefaultRunnerConstraints.type, ""))
+    error_message = "SGDefaultRunnerConstraints.type must be \"shared\" or \"private\" (or the whole variable null to defer to the execution preset)."
   }
   validation {
-    condition     = var.SGDefaultRunnerConstraints.type != "private" || length(coalesce(var.SGDefaultRunnerConstraints.names, [])) > 0
+    condition     = var.SGDefaultRunnerConstraints == null || try(var.SGDefaultRunnerConstraints.type, "") != "private" || length(coalesce(try(var.SGDefaultRunnerConstraints.names, null), [])) > 0
     error_message = "SGDefaultRunnerConstraints.names must list at least one runner group when type is \"private\"."
   }
 }
@@ -100,9 +101,20 @@ variable "SGDefaultSourceConfigDestKind" {
   type        = string
 }
 
+variable "SGTerraformVersionSource" {
+  default     = "carry"
+  description = "Where the migrated workflows get their Terraform version from. \"carry\": keep each workspace's pinned TFC version; workspaces without a pinned semver (e.g. 'latest') use SGDefaultTerraformVersion, and so does the importer when the SG API rejects a pinned version as above its managed ceiling (1.5.7). \"preset\": send no version at all, so StackGuardian fills it from the org's execution preset (Settings -> Runner groups -> Execution presets), or its platform default when none is configured; SGDefaultTerraformVersion is then ignored. A workspaceOverrides[name].terraformVersion is always sent as-is."
+  type        = string
+  validation {
+    condition     = contains(["carry", "preset"], var.SGTerraformVersionSource)
+    error_message = "SGTerraformVersionSource must be \"carry\" or \"preset\"."
+  }
+}
+
 variable "SGDefaultTerraformVersion" {
   default     = "TERRAFORM-1.5.7"
-  description = "SG Terraform version used when a workspace's terraform_version is not a pinned semver (e.g. 'latest' or a version constraint). Also used by the importer when the SG API rejects a pinned version as above the managed ceiling (1.5.7, the last MPL/FOSS release; newer versions are BSL and not bundled). Use the SG-formatted value, e.g. TERRAFORM-1.5.7."
+  nullable    = true
+  description = "Fallback SG Terraform version when SGTerraformVersionSource is \"carry\": used for workspaces whose terraform_version is not a pinned semver (e.g. 'latest' or a version constraint), and by the importer when the SG API rejects a pinned version as above the managed ceiling (1.5.7, the last MPL/FOSS release; newer versions are BSL and not bundled). Use the SG-formatted value, e.g. TERRAFORM-1.5.7, or null to leave those workflows to the org's execution preset instead."
   type        = string
 }
 

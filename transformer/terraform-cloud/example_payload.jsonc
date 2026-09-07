@@ -34,11 +34,11 @@
   "ResourceName": "", // workspace name
   "RunnerConstraints": {
     "type": ""
-  }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}
+  }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}. Omit the whole key (SGDefaultRunnerConstraints = null) and StackGuardian applies the org's execution preset at import.
   "Tags": [], // workflow tags
   "TerraformConfig": {
     "managedTerraformState": true, // managed state from StackGuardian
-    "terraformVersion": "TERRAFORM-1.1.6" // version of terraform
+    "terraformVersion": "TERRAFORM-1.1.6" // version of terraform; omit the key (SGTerraformVersionSource = "preset", or a null fallback) and the org's execution preset decides. The API only fills keys that are absent, never null/"".
   },
   "UserSchedules": [],
   "VCSConfig": {
