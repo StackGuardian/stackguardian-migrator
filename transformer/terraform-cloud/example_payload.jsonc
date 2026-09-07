@@ -26,10 +26,15 @@
         "ERRORED": [] // list of emails to notify
       }
     },
-    "wfChaining": { "COMPLETED": [], "ERRORED": [] }
+    "wfChaining": {
+      "COMPLETED": [],
+      "ERRORED": []
+    }
   },
   "ResourceName": "", // workspace name
-  "RunnerConstraints": { "type": "" }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}
+  "RunnerConstraints": {
+    "type": ""
+  }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}
   "Tags": [], // workflow tags
   "TerraformConfig": {
     "managedTerraformState": true, // managed state from StackGuardian
@@ -37,7 +42,10 @@
   },
   "UserSchedules": [],
   "VCSConfig": {
-    "iacInputData": { "data": {}, "schemaType": "RAW_JSON" }, // data key consists of key value pairs { "env1" : "secret} as terraform environment variables
+    "iacInputData": {
+      "data": {},
+      "schemaType": "RAW_JSON"
+    }, // data key consists of key value pairs { "env1" : "secret} as terraform environment variables
     "iacVCSConfig": {
       "customSource": {
         "config": {
@@ -67,10 +75,24 @@
     "gh_check": true,
     "gl_pipeline": true,
     "post_comments": true,
-    "push": { "createWfRun": { "enabled": true } }, // run on push to tracked branch
-    "pull_request_opened": { "createWfRun": { "enabled": true } }, // TFC speculative plan
-    "pull_request_modified": { "createWfRun": { "enabled": true } },
+    "push": {
+      "createWfRun": {
+        "enabled": true
+      }
+    }, // run on push to tracked branch
+    "pull_request_opened": {
+      "createWfRun": {
+        "enabled": true
+      }
+    }, // TFC speculative plan
+    "pull_request_modified": {
+      "createWfRun": {
+        "enabled": true
+      }
+    },
     "file_triggers_enabled": true, // from TFC file_triggers_enabled
-    "file_trigger_patterns": ["path/to/workdir/*"] // TFC trigger_patterns / trigger_prefixes / working_directory
+    "file_trigger_patterns": [
+      "path/to/workdir/*"
+    ] // TFC trigger_patterns / trigger_prefixes / working_directory
   }
 }

@@ -6,7 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/tools.sh"
 
 # Detail lines are shown only in verbose mode; warnings always show.
-log() { [ "${SG_VERBOSE:-0}" = "1" ] || return 0; printf '%s[convert]%s %s\n' "$C_CYAN" "$C_RESET" "$*" >&2; }
+log() {
+  [ "${SG_VERBOSE:-0}" = "1" ] || return 0
+  printf '%s[convert]%s %s\n' "$C_CYAN" "$C_RESET" "$*" >&2
+}
 
 INPUT_FILE_JSON="${1:-}"
 if [ -z "$INPUT_FILE_JSON" ]; then
