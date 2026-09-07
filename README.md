@@ -38,7 +38,7 @@ That's it — no IDs to look up and no workflow-group mapping to fill in. `init`
 - Output is concise by default (terraform's plan/init noise is hidden; shown on error). Add `-v`/`--verbose` for full output. Known API errors come with a hint naming the `terraform.tfvars` field to fix.
 - Flags: `-y` skip the import prompt (CI; also makes `init` non-interactive), `--concurrency N` parallel jobs, `--org NAME`, `--no-create-groups` require groups to pre-exist, `--skip-preflight`, `--build` rebuild the image, `--native`/`--local` force a local run even when Docker is available.
 - Tuning via env: `SG_RETRIES`, `SG_TF_PARALLELISM`, `SG_NATIVE=1`, `SG_UI_URL` (base URL for the checklist's links, default `https://app.stackguardian.io`).
-- Tab completion for the current shell session: `source <(./sg-migrate.sh completion zsh)` (or `bash`). `init` prints this line for your shell.
+- Tab completion for the current shell session: `source <(./sg-migrate.sh completion)` (bash/zsh detected; or pass `bash`/`zsh`). `init` prints this line.
 - TFC auth: set `TFE_TOKEN` (recommended — a long-lived token avoids re-running `terraform login`); otherwise the `terraform login` credentials file is mounted read-only into the container. Tokens are only ever read from the environment; `init` never writes them to disk.
 
 The manual, step-by-step flow below remains supported for fine-grained control and is what each phase runs under the hood (the helper scripts live in `scripts/`).
