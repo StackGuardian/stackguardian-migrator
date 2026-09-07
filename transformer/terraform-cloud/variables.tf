@@ -71,6 +71,23 @@ variable "SGDefaultDeploymentPlatformConfig" {
   type        = list(any)
 }
 
+variable "SGDefaultRunnerConstraints" {
+  default     = { type = "shared" }
+  description = "Runner constraints applied to every workflow. Use { type = \"shared\" } for SG-hosted runners, or { type = \"private\", names = [\"<runner-group>\"] } to put every workflow behind a private runner group. Override per workspace via workspaceOverrides[name].RunnerConstraints."
+  type = object({
+    type  = string
+    names = optional(list(string))
+  })
+  validation {
+    condition     = contains(["shared", "private"], var.SGDefaultRunnerConstraints.type)
+    error_message = "SGDefaultRunnerConstraints.type must be \"shared\" or \"private\"."
+  }
+  validation {
+    condition     = var.SGDefaultRunnerConstraints.type != "private" || length(coalesce(var.SGDefaultRunnerConstraints.names, [])) > 0
+    error_message = "SGDefaultRunnerConstraints.names must list at least one runner group when type is \"private\"."
+  }
+}
+
 variable "SGDefaultSourceConfigDestKind" {
   default     = "GIT_OTHER"
   description = "Choose from: GITHUB_COM, BITBUCKET_ORG, GITLAB_COM, AZURE_DEVOPS, GIT_OTHER"

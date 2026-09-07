@@ -77,7 +77,7 @@ locals {
       )
 
       DeploymentPlatformConfig = try(var.workspaceOverrides[wsName].DeploymentPlatformConfig, null) != null ? var.workspaceOverrides[wsName].DeploymentPlatformConfig : var.SGDefaultDeploymentPlatformConfig
-      RunnerConstraints        = try(var.workspaceOverrides[wsName].RunnerConstraints, null) != null ? var.workspaceOverrides[wsName].RunnerConstraints : { "type" : "shared" }
+      RunnerConstraints        = try(var.workspaceOverrides[wsName].RunnerConstraints, null) != null ? var.workspaceOverrides[wsName].RunnerConstraints : { for k, v in var.SGDefaultRunnerConstraints : k => v if v != null }
 
       VCSConfig = {
         "iacVCSConfig" : {

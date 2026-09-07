@@ -44,7 +44,7 @@ The manual, step-by-step flow below remains supported for fine-grained control a
 ## Prerequisites
 
 - An organization on [StackGuardian Platform](https://app.stackguardian.io)
-- Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform.
+- Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform. To run every workflow on a private runner group, set `SGDefaultRunnerConstraints = { type = "private", names = ["<runner-group>"] }` in `terraform.tfvars` (per-workspace exceptions via `workspaceOverrides[<name>].RunnerConstraints`).
 - Terraform
 - [sg-cli](https://github.com/StackGuardian/sg-cli)
 
