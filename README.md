@@ -36,6 +36,7 @@ That's it — no workflow-group mapping to fill in. Each TFC project is imported
 - Output is concise by default (terraform's plan/init noise is hidden; shown on error). Add `-v`/`--verbose` for full output.
 - Flags: `-y` skip the import prompt (CI), `--concurrency N` parallel jobs, `--org NAME`, `--no-create-groups` require groups to pre-exist, `--build` rebuild the image, `--native`/`--local` force a local run even when Docker is available.
 - Tuning via env: `SG_RETRIES`, `SG_TF_PARALLELISM`, `SG_NATIVE=1`.
+- Tab completion for the current shell session: `source <(./sg-migrate.sh completion zsh)` (or `bash`). `init` prints this line for your shell.
 - TFC auth: set `TFE_TOKEN` (recommended — a long-lived token avoids re-running `terraform login`); otherwise the `terraform login` credentials file is mounted read-only into the container. SG/TFC tokens are passed as env vars.
 
 The manual, step-by-step flow below remains supported for fine-grained control and is what each phase runs under the hood (the helper scripts live in `scripts/`).
