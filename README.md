@@ -21,23 +21,25 @@ export TFE_TOKEN=<TFC/TFE token>     # long-lived API token (User/Team/Org token
 export SG_API_TOKEN=<your SG token>
 export SG_ORG=<your SG org>
 
-./sg-migrate.sh init                 # scaffolds terraform.tfvars
-# edit transformer/terraform-cloud/terraform.tfvars  (org, integrations, workspaceOverrides)
-
-./sg-migrate.sh all                  # apply -> enrich -> convert -> validate -> import (prompts before importing)
+./sg-migrate.sh init                 # guided setup: picks TFC org/workspaces, SG connectors, runners -> terraform.tfvars
+./sg-migrate.sh all                  # preflight -> apply -> enrich -> convert -> validate -> import (shows a plan, asks before importing)
 ```
 
-That's it — no workflow-group mapping to fill in. Each TFC project is imported into an SG workflow group named `tfc-<project>`, **created automatically via the API** if it doesn't exist. The import prompt shows each group as `exists` or `create` before anything is written.
+That's it — no IDs to look up and no workflow-group mapping to fill in. `init` lists what the tokens can see (TFC organisations and workspaces, SG VCS/cloud connectors and runner groups) and writes `terraform.tfvars` from your picks; `all` verifies every reference **before** running terraform (preflight), prints a migration summary after the export, shows a per-workflow import plan (create/update, Terraform version, runner, triggers, secrets), and ends with a **post-import checklist** of what still needs a human. Each TFC project is imported into an SG workflow group named `tfc-<project>`, **created automatically via the API** if it doesn't exist.
 
-- Single phase: `./sg-migrate.sh apply|enrich|convert|validate|import|triggers`. Running `./sg-migrate.sh` with no command prints the help menu.
+- Single phase: `./sg-migrate.sh preflight|apply|enrich|convert|validate|import|triggers|checklist`. Running `./sg-migrate.sh` with no command prints the help menu.
+- **Resume.** `all` remembers what it completed (`.sg/state.json`) and skips phases whose inputs have not changed, so after a failure you just re-run it; files already imported in full are skipped and files with failures are retried. `--fresh` redoes everything.
+- **Scope.** `--project <segment>` and `--workspace <name>` (repeatable) limit every phase to a subset — migrate one team first, then the rest.
+- **Dry run.** `./sg-migrate.sh import --dry-run` prints the per-workflow plan and stops; nothing is created.
+- **Sensitive variables** (which TFC never exposes) are recreated as SG secrets with the value `CHANGE_ME` and referenced from the workflows as `${secret::<name>}`; the checklist lists each one to fill in. Opt out with `--no-secret-stubs`.
 - TFC **Variable Set** variables are merged into the payloads automatically (the `enrich` phase, via the TFC API); skip it with `--no-variable-sets`.
-- `./sg-migrate.sh clean` removes local working artifacts (`export/`, Terraform state, tool cache) for a fresh start; add `--all` to also remove config. `clean` always runs locally.
+- `./sg-migrate.sh clean` removes local working artifacts (`export/`, Terraform state, run state, tool cache) for a fresh start; add `--all` to also remove config. `clean` always runs locally.
 - **Override** a project's target group (to reuse an existing group) in `.sg/workflow-groups.json`: `{"<project-segment>": "<existing-group>"}`. Override groups must already exist (they're not auto-created).
-- Output is concise by default (terraform's plan/init noise is hidden; shown on error). Add `-v`/`--verbose` for full output.
-- Flags: `-y` skip the import prompt (CI), `--concurrency N` parallel jobs, `--org NAME`, `--no-create-groups` require groups to pre-exist, `--build` rebuild the image, `--native`/`--local` force a local run even when Docker is available.
-- Tuning via env: `SG_RETRIES`, `SG_TF_PARALLELISM`, `SG_NATIVE=1`.
+- Output is concise by default (terraform's plan/init noise is hidden; shown on error). Add `-v`/`--verbose` for full output. Known API errors come with a hint naming the `terraform.tfvars` field to fix.
+- Flags: `-y` skip the import prompt (CI; also makes `init` non-interactive), `--concurrency N` parallel jobs, `--org NAME`, `--no-create-groups` require groups to pre-exist, `--skip-preflight`, `--build` rebuild the image, `--native`/`--local` force a local run even when Docker is available.
+- Tuning via env: `SG_RETRIES`, `SG_TF_PARALLELISM`, `SG_NATIVE=1`, `SG_UI_URL` (base URL for the checklist's links, default `https://app.stackguardian.io`).
 - Tab completion for the current shell session: `source <(./sg-migrate.sh completion zsh)` (or `bash`). `init` prints this line for your shell.
-- TFC auth: set `TFE_TOKEN` (recommended — a long-lived token avoids re-running `terraform login`); otherwise the `terraform login` credentials file is mounted read-only into the container. SG/TFC tokens are passed as env vars.
+- TFC auth: set `TFE_TOKEN` (recommended — a long-lived token avoids re-running `terraform login`); otherwise the `terraform login` credentials file is mounted read-only into the container. Tokens are only ever read from the environment; `init` never writes them to disk.
 
 The manual, step-by-step flow below remains supported for fine-grained control and is what each phase runs under the hood (the helper scripts live in `scripts/`).
 
@@ -162,7 +164,9 @@ To update workflows with different details, re-run the sg-cli command with the m
 
 - **Workflow groups.** Each TFC project imports into an SG workflow group `tfc-<project>`, created via the API if missing (disable with `--no-create-groups`). Override the target group per project in `.sg/workflow-groups.json`; override groups must already exist.
 - **Variable Sets are migrated** (the `enrich` phase) — global, project-, and workspace-scoped sets are resolved per workspace with TFC precedence (priority sets override workspace vars; otherwise workspace vars win). **Sensitive** set variables can't be read from the API, so they're skipped and reported — recreate them as StackGuardian secrets.
-- **Sensitive variables are skipped.** TFC never returns sensitive values via the API, so they are omitted from the payload and listed in `migration-summary.md`. Recreate them as StackGuardian secrets.
+- **Sensitive variables become placeholder secrets.** TFC never returns sensitive values via the API. The export omits them (listed in `migration-summary.md`); after import the orchestrator creates an SG secret `tfc-<workflow>-<VAR>` with the value `CHANGE_ME` for each, references it from the workflow (`${secret::<name>}`, as an environment variable or IaC input) and lists it in `export/post-import-checklist.md`. Set the real values in the SG UI. `--no-secret-stubs` leaves SG secrets untouched.
 - **Terraform version fallback (FOSS ceiling).** Workspaces set to `latest` or a version constraint use `SGDefaultTerraformVersion` at export time. Pinned versions are carried over as-is and tried first at import, so a custom runtime image or private runner that ships that binary keeps working. StackGuardian's _managed_ runtimes only go up to **1.5.7**, the last MPL-licensed (FOSS) Terraform release; newer versions are BSL-licensed and are not bundled. When the API rejects a workflow for that reason, the importer **automatically re-imports it with `SGDefaultTerraformVersion`**, patches the payload file to match, prints a notice, and records each case in `export/terraform-version-fallbacks.log`. Those workflows run a different Terraform than they did in TFC, so check compatibility before the first run. To keep a newer version, set `workspaceOverrides[<name>].terraformVersion` to a binary path mounted from a private runner (or use a custom runtime container template) and re-import.
 - **State export is idempotent.** Re-running `terraform apply` only pulls state for workspaces not yet exported. Set `forceStateRefresh = true` to re-pull everything. Workspaces not using `remote` execution may export incomplete state — see the summary.
-- **Workflow naming.** `ResourceName` currently mirrors the TFC workspace name. Confirm it satisfies StackGuardian's naming rules before import.
+- **Workflow naming.** `ResourceName` mirrors the TFC workspace name, sanitized to StackGuardian's rules (1-100 chars, `[-a-zA-Z0-9_]`); any rename is listed in the summary and the checklist.
+- **Preflight.** `apply`, `import` and `all` first verify the TFC and SG tokens, the TFC org and workspace selection, and that every connector, secret and runner group referenced in `terraform.tfvars` exists. Fix what it reports (or re-run `init`); `--skip-preflight` bypasses it.
+- **Post-import checklist.** `export/post-import-checklist.md` (also printed) collects the secrets to fill in, failed imports, Terraform version fallbacks, failed VCS triggers, missing state exports and renames, with links into the SG UI.

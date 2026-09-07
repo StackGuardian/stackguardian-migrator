@@ -77,11 +77,12 @@ Commands:
   triggers    Register VCS triggers for already-imported workflows (second pass)
   checklist   Create placeholder secrets for skipped sensitive variables and write
               export/post-import-checklist.md (runs automatically after import)
-  all         apply -> enrich -> convert -> validate -> import
+  all         preflight -> apply -> enrich -> convert -> validate -> import -> checklist
+              (resumes where a previous run stopped; --fresh to redo everything)
   clean       Remove local working artifacts for a fresh start (export/, TF state,
               tool cache). Add --all to also remove config (terraform.tfvars, mapping).
   completion  Print a shell completion script for the current session:
-              \`source <($0 completion zsh)\` (or bash)
+              \`source <($PROG completion zsh)\` (or bash)
 
 Each TFC project maps to an SG workflow group named tfc-<project>, created via the
 API if missing. Override a project's target group in .sg/workflow-groups.json
