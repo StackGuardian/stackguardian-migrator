@@ -29,7 +29,7 @@ export SG_ORG=<your SG org>
 
 That's it — no workflow-group mapping to fill in. Each TFC project is imported into an SG workflow group named `tfc-<project>`, **created automatically via the API** if it doesn't exist. The import prompt shows each group as `exists` or `create` before anything is written.
 
-- Single phase: `./sg-migrate.sh apply|enrich|convert|validate|import`.
+- Single phase: `./sg-migrate.sh apply|enrich|convert|validate|import|triggers`. Running `./sg-migrate.sh` with no command prints the help menu.
 - TFC **Variable Set** variables are merged into the payloads automatically (the `enrich` phase, via the TFC API); skip it with `--no-variable-sets`.
 - `./sg-migrate.sh clean` removes local working artifacts (`export/`, Terraform state, tool cache) for a fresh start; add `--all` to also remove config. `clean` always runs locally.
 - **Override** a project's target group (to reuse an existing group) in `.sg/workflow-groups.json`: `{"<project-segment>": "<existing-group>"}`. Override groups must already exist (they're not auto-created).

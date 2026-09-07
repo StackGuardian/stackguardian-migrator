@@ -14,6 +14,7 @@ source "$SCRIPT_DIR/tools.sh"
 # root used for all repo-relative paths.
 TRANSFORMER_DIR="$SG_REPO_ROOT/transformer/terraform-cloud"
 TFVARS="$TRANSFORMER_DIR/terraform.tfvars"
+PROG="${SG_PROG:-$0}"
 EXPORT_DIR="${SG_EXPORT_DIR:-$SG_REPO_ROOT/export}"
 MAPPING="${SG_WFGROUP_MAP:-$SG_REPO_ROOT/.sg/workflow-groups.json}"
 ORG="${SG_ORG:-}"
@@ -32,7 +33,7 @@ PF=()
 
 usage() {
   cat >&2 <<EOF
-Usage: $0 [options] [command]
+Usage: $PROG [options] <command>
 
 Commands:
   init        Create terraform.tfvars from the template
@@ -43,7 +44,7 @@ Commands:
   import      Import each payload to StackGuardian (parallel, with confirmation),
               then register VCS triggers (unless --no-vcs-triggers)
   triggers    Register VCS triggers for already-imported workflows (second pass)
-  all         apply -> enrich -> convert -> validate -> import (default)
+  all         apply -> enrich -> convert -> validate -> import
   clean       Remove local working artifacts for a fresh start (export/, TF state,
               tool cache). Add --all to also remove config (terraform.tfvars, mapping).
   completion  Print a shell completion script for the current session:
@@ -261,7 +262,7 @@ set_triggers_pass() {
   if run_parallel do_set_triggers "$CONC" "${PF[@]}"; then
     sg_success "vcs triggers registered"
   else
-    sg_err "one or more VCS trigger registrations failed (re-run: $0 triggers)"
+    sg_err "one or more VCS trigger registrations failed (re-run: $PROG triggers)"
     return 1
   fi
 }
@@ -333,7 +334,7 @@ cmd_apply() {
 
 cmd_enrich() {
   sg_step "Phase: variable sets"
-  [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS") (run: $0 init)."
+  [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS") (run: $PROG init)."
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR") (run 'apply' first)."
   # Variable sets belong to the TFC org (tfOrg in terraform.tfvars), not SG_ORG.
@@ -613,7 +614,7 @@ _sg_migrate() {
     'validate:Validate payloads against the SG schema'
     'import:Import payloads to StackGuardian, then register VCS triggers'
     'triggers:Register VCS triggers for already-imported workflows'
-    'all:apply -> enrich -> convert -> validate -> import (default)'
+    'all:apply -> enrich -> convert -> validate -> import'
     'clean:Remove local working artifacts'
     'completion:Print a shell completion script'
   )
@@ -641,7 +642,7 @@ _sg_migrate() {
 compdef _sg_migrate sg-migrate.sh migrate.sh
 ZSH
     ;;
-  *) die "usage: $0 completion <bash|zsh>" ;;
+  *) die "usage: $PROG completion <bash|zsh>" ;;
   esac
 }
 
@@ -691,7 +692,11 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-CMD="${CMD:-all}"
+# No command: show the help menu instead of running the whole pipeline.
+if [ -z "$CMD" ]; then
+  usage
+  exit 0
+fi
 export SG_VERBOSE="$VERBOSE"
 
 case "$CMD" in
@@ -706,7 +711,7 @@ triggers) cmd_triggers ;;
 all)
   if [ ! -f "$TFVARS" ]; then
     cmd_init
-    die "Edit $(sg_rel "$TFVARS"), then re-run '$0 all'."
+    die "Edit $(sg_rel "$TFVARS"), then re-run '$PROG all'."
   fi
   # Fail fast on import prerequisites before the (long) apply.
   [ -n "${SG_API_TOKEN:-}" ] || die "SG_API_TOKEN is not set (needed for import)."
