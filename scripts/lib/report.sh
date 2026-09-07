@@ -61,6 +61,7 @@ show_import_plan() {
     seg="$(seg_of "$f")"
     grp="$(group_for "$seg")"
     existing="$(sg_list_workflows "$grp")"
+    printf '%s' "$existing" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || existing='[]'
     rows="$("$JQ_BIN" -r --argjson ex "$existing" --arg def "$SG_DEFAULT_TF_VERSION" --argjson ws "$(ws_filter_json)" \
       --slurpfile sum "${summary:-/dev/null}" '
       ($sum[0] // {}) as $S

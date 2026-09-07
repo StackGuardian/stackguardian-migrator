@@ -50,6 +50,7 @@ if [ "$NATIVE" = "1" ] || ! command -v docker >/dev/null 2>&1; then
   [ "$NATIVE" = "1" ] || sg_warn "docker not found; running natively"
   exec "$SCRIPT_DIR/scripts/migrate.sh" ${ARGS[@]+"${ARGS[@]}"}
 fi
+sg_dim "running in Docker ($IMAGE); pass --native to run on this machine instead"
 
 if [ "$BUILD" = "1" ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   sg_log "building image $IMAGE ..."

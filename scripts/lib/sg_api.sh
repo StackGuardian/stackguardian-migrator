@@ -79,12 +79,11 @@ sg_workflow_exists() { [ "$(sg_http_code GET "$(wf_url "$1" "$2")")" = "200" ]; 
 
 # sg_list_workflows <group> — ["wf-name", ...] in the group ([] on 404).
 sg_list_workflows() {
-  local body
+  local body out
   if body="$(sg_api_get "$(sg_org_url)/wfgrps/$1/wfs/listall/" 2>/dev/null)"; then
-    printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | .ResourceName] | map(select(. != null))'
-  else
-    echo '[]'
+    out="$(printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif (.data.Workflows? | type) == "array" then .data.Workflows elif type == "array" then . else [] end)[] | (.ResourceName // .Id // empty)]' 2>/dev/null)"
   fi
+  printf '%s' "${out:-[]}"
 }
 
 # sg_patch_workflow <group> <wf> <json> — PATCH a workflow.
