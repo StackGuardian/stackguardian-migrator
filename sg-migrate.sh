@@ -27,10 +27,19 @@ for a in "$@"; do
   esac
 done
 
-# 'clean' and 'completion' only touch the local shell/filesystem — no container.
+# Help, 'clean' and 'completion' only touch the local shell/filesystem — no
+# container. With no command at all, migrate.sh prints the help menu.
+HAS_CMD=0
 for a in ${ARGS[@]+"${ARGS[@]}"}; do
-  case "$a" in clean | completion) NATIVE=1 ;; esac
+  case "$a" in
+  clean | completion | -h | --help) NATIVE=1; HAS_CMD=1 ;;
+  init | apply | enrich | convert | validate | import | triggers | all) HAS_CMD=1 ;;
+  esac
 done
+[ "$HAS_CMD" -eq 1 ] || NATIVE=1
+# Let migrate.sh print the name the user actually invoked in its help/hints.
+export SG_PROG="${0##*/}"
+case "$0" in */*) SG_PROG="./${0##*/}" ;; esac
 
 if [ "$NATIVE" = "1" ] || ! command -v docker >/dev/null 2>&1; then
   [ "$NATIVE" = "1" ] || sg_warn "docker not found; running natively"
@@ -45,7 +54,7 @@ fi
 DOCKER_ARGS=(--rm -i
   -v "$SCRIPT_DIR:/app" -w /app
   -e SG_API_TOKEN -e SG_ORG -e SG_BASE_URL -e SG_CONCURRENCY -e SG_RETRIES -e SG_TF_PARALLELISM
-  -e TFE_TOKEN)
+  -e TFE_TOKEN -e SG_PROG)
 
 # Interactive TTY only when attached to one (so the confirmation prompt works,
 # but CI/non-tty invocations still run — use -y there).
