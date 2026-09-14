@@ -56,6 +56,7 @@ preflight_tfc() {
     fi
     PF_TFC_WORKSPACES="$body"
     PF_TFC_SELECTED="$sel"
+    PF_TFC_PROJECTS="$(tfc_list_projects "$org" 2>/dev/null || echo '[]')"
   else
     pf_warn "could not list workspaces for '$org' (HTTP $TFC_HTTP_CODE)"
   fi
@@ -114,6 +115,9 @@ preflight_sg() {
   done < <(tfvars_json | "$jqb" -r '
       [ (.SGDefaultVCSAuthIntegrationID | select(. != null and . != "") | ["VCS", .]),
         ((.SGDefaultDeploymentPlatformConfig // [])[]?.config.integrationId | select(. != null and . != "") | ["cloud", .]),
+        ((.projectOverrides // {}) | to_entries[]? | .value
+          | ((.vcsAuthIntegrationID | select(. != null and . != "") | ["project VCS", .]),
+             ((.DeploymentPlatformConfig // [])[]?.config.integrationId | select(. != null and . != "") | ["project cloud", .]))),
         ((.workspaceOverrides // {}) | to_entries[]? | .value
           | ((.vcsAuthIntegrationID | select(. != null and . != "") | ["override VCS", .]),
              ((.DeploymentPlatformConfig // [])[]?.config.integrationId | select(. != null and . != "") | ["override cloud", .]))) ]
@@ -122,9 +126,10 @@ preflight_sg() {
   # Every private runner group must exist.
   while IFS= read -r rg; do
     [ -n "$rg" ] || continue
-    if sg_runnergroup_exists "$rg"; then pf_ok "runner group '$rg' exists"; else pf_fail "runner group '$rg' not found in org '$ORG' — check SGDefaultRunnerConstraints / workspaceOverrides"; fi
+    if sg_runnergroup_exists "$rg"; then pf_ok "runner group '$rg' exists"; else pf_fail "runner group '$rg' not found in org '$ORG' — check SGDefaultRunnerConstraints / projectOverrides / workspaceOverrides"; fi
   done < <(tfvars_json | "$jqb" -r '
       [ (.SGDefaultRunnerConstraints // {} | select(.type == "private") | .names[]?),
+        ((.projectOverrides // {}) | to_entries[]? | .value.RunnerConstraints // {} | select(.type == "private") | .names[]?),
         ((.workspaceOverrides // {}) | to_entries[]? | .value.RunnerConstraints // {} | select(.type == "private") | .names[]?) ]
       | unique | .[]')
   if tfvars_is_null SGDefaultRunnerConstraints; then
@@ -210,13 +215,34 @@ preflight_config() {
     pf_warn "the TFC workspaces are connected to $(tfc_vcs_label_for "$prov") but the VCS kind is $v"
   fi
 
+  # Per-project VCS connector vs. the kind that project ends up with.
+  local pconn pkind pconn_kind
+  while IFS=$'\t' read -r line pconn pkind; do
+    [ -n "$line" ] || continue
+    [ -n "$pkind" ] || pkind="$v"
+    pconn_kind=""
+    [ -n "${PF_SG_INTS:-}" ] && pconn_kind="$(sg_vcs_kind_of "$(sg_integration_type "$PF_SG_INTS" "$pconn")")"
+    if [ -n "$pconn_kind" ] && [ "$pconn_kind" != "$pkind" ]; then
+      pf_fail "projectOverrides['$line']: VCS kind $pkind does not match connector ${pconn#/integrations/} ($pconn_kind) — set projectOverrides[\"$line\"].sourceConfigDestKind = \"$pconn_kind\""
+    elif [ -n "$pconn_kind" ]; then
+      pf_ok "projectOverrides['$line']: VCS kind $pkind matches connector ${pconn#/integrations/}"
+    fi
+  done < <(tfvars_json | "$jqb" -r '(.projectOverrides // {}) | to_entries[]? | select((.value.vcsAuthIntegrationID // "") != "") | [.key, .value.vcsAuthIntegrationID, (.value.sourceConfigDestKind // "")] | @tsv')
+
   while IFS= read -r v; do
     [ -n "$v" ] || continue
     case "$v" in
     AWS_STATIC | AWS_RBAC | AWS_OIDC | AZURE_STATIC | AZURE_OIDC | AZURE_MANAGED_ID_OIDC | GCP_STATIC | GCP_OIDC) pf_ok "cloud connector kind $v" ;;
     *) pf_fail "cloud connector kind '$v' (DeploymentPlatformConfig) is not one of AWS_STATIC, AWS_RBAC, AWS_OIDC, AZURE_STATIC, AZURE_OIDC, AZURE_MANAGED_ID_OIDC, GCP_STATIC, GCP_OIDC — a VCS connector was picked as the cloud connector?" ;;
     esac
-  done < <(tfvars_json | "$jqb" -r '[ (.SGDefaultDeploymentPlatformConfig // [])[]?.kind, ((.workspaceOverrides // {}) | to_entries[]? | .value.DeploymentPlatformConfig // [] | .[]?.kind) ] | map(select(. != null)) | unique | .[]')
+  done < <(tfvars_json | "$jqb" -r '[ (.SGDefaultDeploymentPlatformConfig // [])[]?.kind, ((.projectOverrides // {}) | to_entries[]? | .value.DeploymentPlatformConfig // [] | .[]?.kind), ((.workspaceOverrides // {}) | to_entries[]? | .value.DeploymentPlatformConfig // [] | .[]?.kind) ] | map(select(. != null)) | unique | .[]')
+
+  # Cloud credential env vars: stripped per connector kind, or kept.
+  if [ "$(tfvars_get .stripCloudAuthVars true)" != "false" ]; then
+    pf_ok "cloud credential variables (ARM_*, AWS_ACCESS_KEY_ID, GOOGLE_CREDENTIALS, ... per connector kind) are stripped — the connector provides them (stripCloudAuthVars)"
+  else
+    pf_ok "cloud credential variables are kept (stripCloudAuthVars = false)"
+  fi
 
   # Terraform version policy, and what the execution preset would supply where
   # tfvars leaves the decision to it.
@@ -271,6 +297,16 @@ preflight_config() {
       fi
     done < <(tfvars_json | "$jqb" -r '(.workspaceOverrides // {}) | keys[]')
   fi
+  if [ -n "${PF_TFC_PROJECTS:-}" ] && [ "$PF_TFC_PROJECTS" != "[]" ]; then
+    while IFS= read -r v; do
+      [ -n "$v" ] || continue
+      if printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -e --arg n "$v" '[.[].name] | index($n) != null' >/dev/null; then
+        pf_ok "projectOverrides['$v'] matches a TFC project"
+      else
+        pf_warn "projectOverrides['$v'] matches no TFC project in the org (typo? projects: $(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r '[.[].name] | join(", ")')) — its settings would apply to nothing"
+      fi
+    done < <(tfvars_json | "$jqb" -r '(.projectOverrides // {}) | keys[]')
+  fi
   return 0
 }
 
@@ -283,6 +319,19 @@ preflight_import_inputs() {
     pf_fail "no payload files in $(sg_rel "$EXPORT_DIR") — run '$PROG apply' first"
   fi
   if sg_resolve sg-cli sg_ensure_sgcli >/dev/null 2>&1; then pf_ok "sg-cli available"; else pf_fail "sg-cli not found and could not be downloaded"; fi
+  # Workflow groups: reused when they exist, created otherwise; the API-backed
+  # reuse/create/move/collision check is the import plan's. Warn early when a
+  # project's group changed since its last import (a move would be refused).
+  local f seg grp prev
+  if [ "${CREATE_GROUPS:-1}" -eq 1 ]; then pf_ok "workflow groups: reused when they exist, created otherwise"; else pf_ok "workflow groups: must already exist (--no-create-groups)"; fi
+  for f in ${PF[@]+"${PF[@]}"}; do
+    seg="$(seg_of "$f")"
+    grp="$(group_for "$seg")"
+    prev="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r --arg s "$seg" '.import[$s].group // empty')"
+    if [ -n "$prev" ] && [ "$prev" != "$grp" ]; then
+      pf_warn "$(basename "$f"): last imported into '$prev', the target is now '$grp' — the import plan refuses a move unless '$prev' no longer holds these workflows"
+    fi
+  done
   return 0
 }
 
@@ -299,6 +348,7 @@ preflight_run() {
   PF_WARN=0
   PF_TFC_WORKSPACES=""
   PF_TFC_SELECTED=""
+  PF_TFC_PROJECTS=""
   PF_SG_INTS=""
   PF_PRESET="{}"
   PF_PRESET_READ=0
