@@ -578,7 +578,14 @@ do_set_triggers() {
       rc=1
     fi
   done
-  sg_log "$(basename "$f"): triggers set on ${#ok[@]} workflow(s), ${#unchanged[@]} unchanged, skipped $skip without triggers"
+  # One line per file; parts that are zero are left out.
+  local parts=""
+  [ "${#ok[@]}" -gt 0 ] && parts="triggers set on ${#ok[@]} workflow(s)"
+  [ "${#unchanged[@]}" -gt 0 ] && parts="$parts${parts:+, }${#unchanged[@]} unchanged"
+  [ "$skip" -gt 0 ] && parts="$parts${parts:+, }$skip without triggers"
+  [ "${#failed[@]}" -gt 0 ] && parts="$parts${parts:+, }${#failed[@]} failed"
+  [ "${#missing[@]}" -gt 0 ] && parts="$parts${parts:+, }${#missing[@]} not in SG"
+  sg_log "$(basename "$f"): ${parts:-no workflows with triggers}"
   "$JQ_BIN" -nc --arg g "$grp" --argjson sha "$shas" \
     --argjson ok "$([ "${#ok[@]}" -gt 0 ] && names_json "${ok[@]}" || echo '[]')" \
     --argjson unchanged "$([ "${#unchanged[@]}" -gt 0 ] && names_json "${unchanged[@]}" || echo '[]')" \
