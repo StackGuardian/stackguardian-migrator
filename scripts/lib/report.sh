@@ -190,13 +190,13 @@ write_run_result() {
     --argjson xt "$([ "${#TAG_EXCLUDE[@]}" -gt 0 ] && names_json "${TAG_EXCLUDE[@]}" || echo '[]')" \
     '{projects: $p, workspaces: $w, excludeWorkspaces: $x, tags: $t, excludeTags: $xt}')"
   state_read | "$JQ_BIN" --arg cmd "$PROG ${SG_RUN_ARGS:-}" --arg at "$(state_now)" --argjson took "$((SECONDS - RUN_T0))" \
-    --arg org "$ORG" --arg url "$SG_BASE_URL" --argjson dry "$([ "${DRY_RUN:-0}" -eq 1 ] && echo true || echo false)" \
+    --arg org "$ORG" --arg url "$SG_BASE_URL" --arg region "${SG_REGION:-}" --arg ui "${SG_UI_URL:-}" --argjson dry "$([ "${DRY_RUN:-0}" -eq 1 ] && echo true || echo false)" \
     --arg outcome "$outcome" --argjson scope "$scope" --argjson groups "${PLAN_GROUP_ROWS:-[]}" \
     --argjson overlay "${TFVARS_OVERLAY_JSON:-{\}}" --arg overlay_desc "$(declare -F overlay_describe >/dev/null && overlay_describe || true)" \
     --argjson problems "$problems" --argjson rows "$rows" --argjson open "${CHECKLIST_OPEN:-0}" '
     . as $st
     | {
-      command: $cmd, at: $at, tookSeconds: $took, org: $org, apiUrl: $url, dryRun: $dry, outcome: $outcome,
+      command: $cmd, at: $at, tookSeconds: $took, org: $org, region: $region, apiUrl: $url, uiUrl: $ui, dryRun: $dry, outcome: $outcome,
       scope: $scope, configuration: {description: $overlay_desc, overlay: $overlay}, groups: $groups, problems: $problems,
       workflows: [ $rows[] | . as $r
         | ($st.import[$r.segment] // {}) as $imp | ($st.triggers[$r.segment] // {}) as $tr

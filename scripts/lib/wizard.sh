@@ -648,8 +648,8 @@ wizard_run() {
     sg_err "the generated $(sg_rel "$TFVARS") is not valid HCL — this is a bug in the wizard; the file was kept for inspection"
     return 1
   fi
-  # Remember the SG org (and API host) for later phases, so users don't have to
-  # export SG_ORG again in a new shell. Tokens are never stored.
-  state_update '.config = ((.config // {}) + {sg_org: $o, sg_base_url: $u})' --arg o "$ORG" --arg u "$SG_BASE_URL"
+  # Remember the SG org, region and API host for later phases, so users don't
+  # have to export SG_ORG / SG_REGION again in a new shell. Tokens are never stored.
+  state_update '.config = ((.config // {}) + {sg_org: $o, sg_region: $r, sg_base_url: $u})' --arg o "$ORG" --arg r "${SG_REGION:-eu}" --arg u "$SG_BASE_URL"
   sg_success "wrote $(sg_rel "$TFVARS")$kept"
 }

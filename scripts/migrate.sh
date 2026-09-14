@@ -7,6 +7,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Captured before the libraries load: lib/checklist.sh gives SG_UI_URL a
+# default, and region_apply must know whether the user set it explicitly.
+SG_UI_URL_SET="${SG_UI_URL:-}"
 # shellcheck source=tools.sh
 source "$SCRIPT_DIR/tools.sh"
 # shellcheck source=lib/prompt.sh
@@ -49,8 +52,31 @@ PROG="${SG_PROG:-$0}"
 EXPORT_DIR="${SG_EXPORT_DIR:-$SG_REPO_ROOT/export}"
 MAPPING="${SG_WFGROUP_MAP:-$SG_REPO_ROOT/.sg/workflow-groups.json}"
 ORG="${SG_ORG:-}"
+# StackGuardian region: --region / SG_REGION picks the API and UI hosts (eu is
+# the default; us; dash = the internal QA environment). An explicit SG_BASE_URL
+# or SG_UI_URL always wins over the region's host. Applied by region_apply once
+# the flags are parsed and the state consulted.
+SG_REGION="${SG_REGION:-}"
 SG_BASE_URL_SET="${SG_BASE_URL:-}"
 SG_BASE_URL="${SG_BASE_URL:-https://api.app.stackguardian.io}"
+SG_UI_URL="${SG_UI_URL:-https://app.stackguardian.io}"
+# region_urls <region> — "<api-url> <ui-url>", exit 1 for an unknown region.
+region_urls() {
+  case "$1" in
+  eu) printf 'https://api.app.stackguardian.io https://app.stackguardian.io' ;;
+  us) printf 'https://api.us.stackguardian.io https://us.stackguardian.io' ;;
+  dash) printf 'https://testapi.qa.stackguardian.io https://dash.qa.stackguardian.io' ;; # internal QA
+  *) return 1 ;;
+  esac
+}
+region_apply() {
+  local urls
+  SG_REGION="${SG_REGION:-eu}"
+  urls="$(region_urls "$SG_REGION")" || die "unknown --region '$SG_REGION' (eu or us)"
+  [ -z "$SG_BASE_URL_SET" ] && SG_BASE_URL="${urls% *}"
+  [ -z "$SG_UI_URL_SET" ] && SG_UI_URL="${urls#* }"
+  export SG_BASE_URL SG_UI_URL
+}
 ASSUME_YES=0
 PURGE=0
 UPGRADE=0
@@ -83,7 +109,14 @@ RUN_T0=$SECONDS
 # shell without SG_ORG still works; flags and env always win.
 if [ -z "$ORG" ] && [ -f "$STATE_FILE" ]; then
   ORG="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r '.config.sg_org // empty' 2>/dev/null || true)"
-  [ -n "$ORG" ] && [ -z "${SG_BASE_URL_SET:-}" ] && SG_BASE_URL="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r --arg d "$SG_BASE_URL" '.config.sg_base_url // $d' 2>/dev/null || echo "$SG_BASE_URL")"
+  if [ -n "$ORG" ] && [ -z "$SG_REGION" ] && [ -z "$SG_BASE_URL_SET" ]; then
+    # The region init ran with; older state files only carry the API host.
+    SG_REGION="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r '.config.sg_region // empty' 2>/dev/null || true)"
+    if [ -z "$SG_REGION" ]; then
+      SG_BASE_URL_SET="$(state_read | "$(sg_resolve jq sg_ensure_jq)" -r '.config.sg_base_url // empty' 2>/dev/null || true)"
+      [ -n "$SG_BASE_URL_SET" ] && SG_BASE_URL="$SG_BASE_URL_SET"
+    fi
+  fi
 fi
 
 
@@ -123,6 +156,8 @@ in another group the plan stops and says so.
 
 Options:
   --org NAME         StackGuardian org for import (or set SG_ORG)
+  --region eu|us     StackGuardian region: eu = api.app/app.stackguardian.io (default),
+                     us = api.us/us.stackguardian.io (or set SG_REGION; init remembers it)
   --export-dir DIR   Payload/state output dir (default: ./export)
   --tfvars FILE      Use this tfvars file instead of transformer/terraform-cloud/terraform.tfvars
                      (or set SG_TFVARS); the file the transformer, enrich and preflight read
@@ -168,7 +203,9 @@ Environment:
   SG_RETRIES         Import retry attempts on failure (default: 4)
   SG_TF_PARALLELISM  terraform apply -parallelism (default: 20)
   SG_TFVARS          tfvars file to use (same as --tfvars)
-  SG_UI_URL          StackGuardian UI base for checklist links (default: https://app.stackguardian.io)
+  SG_REGION          StackGuardian region (same as --region)
+  SG_BASE_URL        StackGuardian API base URL; overrides the region's host
+  SG_UI_URL          StackGuardian UI base for checklist links; overrides the region's host
 EOF
 }
 
@@ -1134,13 +1171,28 @@ finish_line() {
 }
 
 # Single source of truth for shell completion (keep in sync with the parser below
-# and the host-only flags in sg-migrate.sh).
-SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
-SG_OPTIONS="--org --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group -v --verbose -y --yes -h --help --native --local --build"
+# and the host-only flags in sg-migrate.sh). One "cmd:description" per line; the
+# zsh script shows the descriptions, SG_COMMANDS is derived from the first column.
+SG_COMMAND_DESCS="init:Guided setup — generates terraform.tfvars
+preflight:Verify tokens and every id in terraform.tfvars before running
+apply:Run the transformer (terraform apply)
+enrich:Merge TFC Variable Set variables into the payloads
+convert:Convert HCL-string variables to JSON
+validate:Validate payloads against the SG schema
+import:Import payloads to StackGuardian, then register VCS triggers
+triggers:Register VCS triggers for already-imported workflows
+checklist:Write the post-import checklist (and create secret stubs)
+all:preflight -> apply -> enrich -> convert -> validate -> import -> checklist
+clean:Remove local working artifacts
+completion:Print a shell completion script
+update:Pull the latest migrator version (git) and rebuild the image if needed"
+SG_COMMANDS="$(printf '%s\n' "$SG_COMMAND_DESCS" | cut -d: -f1 | tr '\n' ' ' | sed 's/ $//')"
+SG_OPTIONS="--org --region --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
-# is invoked by path, so ./sg-migrate.sh completes too.
+# is invoked by path, so ./sg-migrate.sh completes too. The zsh script works
+# both sourced and saved into a \$fpath dir as _sg-migrate.sh.
 cmd_completion() {
   local shell="${1:-$(current_shell)}"
   case "$shell" in
@@ -1160,6 +1212,7 @@ _sg_migrate() {
   case "\$prev" in
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
     --mapping | --tfvars) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
+    --region) COMPREPLY=(\$(compgen -W "eu us" -- "\$cur")); return ;;
     --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag | --set | --cloud-connector | --vcs-connector | --runner-group | --workflow-group) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
@@ -1187,21 +1240,11 @@ fi
 _sg_migrate() {
   local -a cmds
   cmds=(
-    'init:Guided setup — generates terraform.tfvars'
-    'preflight:Verify tokens and every id in terraform.tfvars before running'
-    'apply:Run the transformer (terraform apply)'
-    'enrich:Merge TFC Variable Set variables into the payloads'
-    'convert:Convert HCL-string variables to JSON'
-    'validate:Validate payloads against the SG schema'
-    'import:Import payloads to StackGuardian, then register VCS triggers'
-    'triggers:Register VCS triggers for already-imported workflows'
-    'checklist:Write the post-import checklist (and create secret stubs)'
-    'all:apply -> enrich -> convert -> validate -> import'
-    'clean:Remove local working artifacts'
-    'completion:Print a shell completion script'
+$(printf '%s\n' "$SG_COMMAND_DESCS" | sed "s/.*/    '&'/")
   )
   _arguments -s \\
     '--org[StackGuardian org for import]:org' \\
+    '--region[StackGuardian region]:region:(eu us)' \\
     '--export-dir[Payload/state output dir]:dir:_files -/' \\
     '--tfvars[tfvars file to use instead of terraform.tfvars]:file:_files' \\
     '--mapping[Project-segment -> group override map]:file:_files' \\
@@ -1237,7 +1280,12 @@ _sg_migrate() {
     shell) [[ "\${words[CURRENT-1]}" == completion ]] && _values 'shell' bash zsh ;;
   esac
 }
-compdef _sg_migrate sg-migrate.sh migrate.sh
+# Sourced (source <(... completion)): register. Autoloaded from a file in \$fpath
+# (installed as _sg-migrate.sh): this run *is* the completion call, so complete now.
+case "\${funcstack[1]}" in
+  _*) _sg_migrate "\$@" ;;
+  *) compdef _sg_migrate sg-migrate.sh migrate.sh ;;
+esac
 ZSH
     ;;
   *) die "usage: $PROG completion [bash|zsh] (default: the shell you are running)" ;;
@@ -1260,6 +1308,11 @@ main() {
       shift
       ;;
     --org=*) ORG="${1#*=}" ;;
+    --region)
+      SG_REGION="$2"
+      shift
+      ;;
+    --region=*) SG_REGION="${1#*=}" ;;
     --export-dir)
       EXPORT_DIR="$2"
       shift
@@ -1368,6 +1421,7 @@ main() {
     exit 0
   fi
   export SG_VERBOSE="$VERBOSE"
+  region_apply
 
   # The run configuration flags (lib/scope.sh) shape a run, not the file.
   case "$CMD" in
