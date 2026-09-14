@@ -3,15 +3,15 @@
   "CLIConfiguration": {
     "TfStateFilePath": "", // path to the state file
     "WorkflowGroup": {
-      "name": "" // workflowgroup name - will be created if it does not exist
+      "name": "" // workflow group: tfc-<project>, or projectOverrides[<project>].workflowGroup; reused if it exists, created otherwise
     }
   },
   "DeploymentPlatformConfig": [
     {
-      "kind": "AWS_RBAC", //  value corresponds to  "AWS_STATIC", "GCP_STATIC" , "AWS_RBAC" OR "AZURE_STATIC"
+      "kind": "AWS_RBAC", // one of AWS_STATIC, AWS_RBAC, AWS_OIDC, AZURE_STATIC, AZURE_OIDC, AZURE_MANAGED_ID_OIDC, GCP_STATIC, GCP_OIDC
       "config": {
         "integrationId": "/integrations/aws-rbac", // value corresponds to /integrations/<your-integration-from-stackguardian>
-        "profileName": "default" // // value corresponds to the profile if "AWS_RBAC"
+        "profileName": "default" // AWS only: the profile name for AWS_RBAC
       }
     }
   ],

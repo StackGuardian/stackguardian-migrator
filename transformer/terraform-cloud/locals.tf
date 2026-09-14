@@ -7,6 +7,36 @@ locals {
   # to set a human-readable WorkflowGroup name in the payload.
   projectNames = { for p in data.tfe_projects.data.projects : p.id => p.name }
 
+  # TFC project per workspace: id, and the raw name (falls back to the id when
+  # the project is not visible to the token).
+  workflowProject   = { for name in local.workflowNames : name => data.tfe_workspace.data[name].project_id }
+  workspaceProjects = { for name, pid in local.workflowProject : name => try(local.projectNames[pid], pid) }
+
+  # Effective override per workspace: workspaceOverrides > projectOverrides (by
+  # the workspace's project name) > null, where null means "the SGDefault*
+  # value decides". Null attributes are dropped from each layer before merge()
+  # - merge() does not skip them - and the all-null base makes every
+  # local.effective[name].<field> safe to reference.
+  effective = {
+    for name in local.workflowNames :
+    name => merge(
+      { for f in local.overrideFieldNames : f => null },
+      { for k, v in try(var.projectOverrides[local.workspaceProjects[name]], {}) : k => v if v != null },
+      { for k, v in try(var.workspaceOverrides[name], {}) : k => v if v != null },
+    )
+  }
+
+  # projectOverrides keys that name no project of the TFC org (typo guard).
+  unknownProjectOverrides = sort([for k in keys(var.projectOverrides) : k if !contains(values(local.projectNames), k)])
+
+  # Effective cloud connector per workflow. Picked via a tuple, not a
+  # conditional: an AWS and an Azure DeploymentPlatformConfig have different
+  # config shapes.
+  deploymentPlatformConfig = {
+    for name in local.workflowNames :
+    name => try([for c in [local.effective[name].DeploymentPlatformConfig, var.SGDefaultDeploymentPlatformConfig] : c if c != null][0], var.SGDefaultDeploymentPlatformConfig)
+  }
+
   # SG workflow-name (ResourceName) sanitization. Per the SG OpenAPI spec,
   # ResourceName must be 1-100 chars; SG's name convention is ^[-a-zA-Z0-9_]+$.
   # TFC workspace names already satisfy both, so for normal inputs this is a
@@ -47,7 +77,7 @@ locals {
   versionFallbacks = {
     for name in local.workflowNames :
     name => data.tfe_workspace.data[name].terraform_version
-    if !can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", data.tfe_workspace.data[name].terraform_version)) && try(var.workspaceOverrides[name].terraformVersion, null) == null
+    if !can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", data.tfe_workspace.data[name].terraform_version)) && local.effective[name].terraformVersion == null
   }
 
   # Terraform version sent per workflow. An override is always sent as-is.
@@ -58,7 +88,7 @@ locals {
   tfVersion = {
     for name in local.workflowNames :
     name => (
-      try(var.workspaceOverrides[name].terraformVersion, null) != null ? var.workspaceOverrides[name].terraformVersion :
+      local.effective[name].terraformVersion != null ? local.effective[name].terraformVersion :
       var.SGTerraformVersionSource == "preset" ? null :
       can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", data.tfe_workspace.data[name].terraform_version)) ? "TERRAFORM-${data.tfe_workspace.data[name].terraform_version}" :
       var.SGDefaultTerraformVersion
@@ -72,7 +102,7 @@ locals {
   runnerConstraints = {
     for name in local.workflowNames :
     name => try([for c in [
-      try(var.workspaceOverrides[name].RunnerConstraints, null),
+      local.effective[name].RunnerConstraints,
       var.SGDefaultRunnerConstraints == null ? null : { for k, v in var.SGDefaultRunnerConstraints : k => v if v != null }
     ] : c if c != null][0], null)
   }
@@ -89,18 +119,20 @@ locals {
   # Drives both the source config kind and which workspaces get VCS triggers.
   sourceKind = {
     for name in local.workflowNames :
-    name => try(var.workspaceOverrides[name].sourceConfigDestKind, null) != null ? var.workspaceOverrides[name].sourceConfigDestKind : var.SGDefaultSourceConfigDestKind
+    name => local.effective[name].sourceConfigDestKind != null ? local.effective[name].sourceConfigDestKind : var.SGDefaultSourceConfigDestKind
   }
 
-  # One SG workflow payload per workspace. Per-workspace overrides win over the
-  # SGDefault* values; everything else is derived from the TFC workspace.
+  # One SG workflow payload per workspace. Overrides (workspace, then project)
+  # win over the SGDefault* values; everything else is derived from the TFC
+  # workspace.
   workflowPayload = {
     for wsName, wsId in data.tfe_workspace_ids.data.ids : wsName => merge({
       CLIConfiguration = {
         "WorkflowGroup" : {
-          # SG workflow group per TFC project: tfc-<project> (matches the group
-          # the importer creates/targets and the per-project payload filename).
-          "name" : "tfc-${local.projectFileSegment[data.tfe_workspace.data[wsName].project_id]}"
+          # SG workflow group per TFC project: projectOverrides[<project>].workflowGroup,
+          # else tfc-<project>. The importer reads it from here (reused when it
+          # exists, created otherwise); the payload file is still named by project.
+          "name" : local.workflowGroups[wsName]
         },
         "TfStateFilePath" : "${abspath(path.root)}/../../${var.exportPath}/states/${data.tfe_workspace.data[wsName].name}.tfstate"
       }
@@ -111,10 +143,10 @@ locals {
         [for v in data.tfe_variables.data[wsId].variables :
           { "config" : { "textValue" : v.value, "varName" : v.name }, "kind" : "PLAIN_TEXT" }
         if v.category == "env" && v.sensitive == false && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])],
-        try(var.workspaceOverrides[wsName].extraEnvironmentVariables, [])
+        local.effective[wsName].extraEnvironmentVariables != null ? local.effective[wsName].extraEnvironmentVariables : []
       )
 
-      DeploymentPlatformConfig = try(var.workspaceOverrides[wsName].DeploymentPlatformConfig, null) != null ? var.workspaceOverrides[wsName].DeploymentPlatformConfig : var.SGDefaultDeploymentPlatformConfig
+      DeploymentPlatformConfig = local.deploymentPlatformConfig[wsName]
 
       VCSConfig = {
         "iacVCSConfig" : {
@@ -125,9 +157,9 @@ locals {
               "includeSubModule" : false,
               "ref" : length(data.tfe_workspace.data[wsName].vcs_repo) > 0 ? data.tfe_workspace.data[wsName].vcs_repo[0].branch : "",
               "isPrivate" : length(data.tfe_workspace.data[wsName].vcs_repo) > 0 ? length(data.tfe_workspace.data[wsName].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.data[wsName].vcs_repo[0].github_app_installation_id) > 0 : false,
-              "auth" : length(data.tfe_workspace.data[wsName].vcs_repo) > 0 ? (length(data.tfe_workspace.data[wsName].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.data[wsName].vcs_repo[0].github_app_installation_id) > 0 ? (try(var.workspaceOverrides[wsName].vcsAuthIntegrationID, null) != null ? var.workspaceOverrides[wsName].vcsAuthIntegrationID : var.SGDefaultVCSAuthIntegrationID) : "") : "",
+              "auth" : length(data.tfe_workspace.data[wsName].vcs_repo) > 0 ? (length(data.tfe_workspace.data[wsName].vcs_repo[0].oauth_token_id) > 0 || length(data.tfe_workspace.data[wsName].vcs_repo[0].github_app_installation_id) > 0 ? (local.effective[wsName].vcsAuthIntegrationID != null ? local.effective[wsName].vcsAuthIntegrationID : var.SGDefaultVCSAuthIntegrationID) : "") : "",
               "workingDir" : data.tfe_workspace.data[wsName].working_directory,
-              "repo" : length(data.tfe_workspace.data[wsName].vcs_repo) > 0 ? format("%s/%s", try(var.workspaceOverrides[wsName].vcsRepoPrefix, null) != null ? var.workspaceOverrides[wsName].vcsRepoPrefix : var.SGDefaultIACVCSRepoPrefix, data.tfe_workspace.data[wsName].vcs_repo[0].identifier) : ""
+              "repo" : length(data.tfe_workspace.data[wsName].vcs_repo) > 0 ? format("%s/%s", local.effective[wsName].vcsRepoPrefix != null ? local.effective[wsName].vcsRepoPrefix : var.SGDefaultIACVCSRepoPrefix, data.tfe_workspace.data[wsName].vcs_repo[0].identifier) : ""
             }
           }
         },
@@ -145,8 +177,10 @@ locals {
       # cmd_triggers), which is what actually registers the repo webhook. Field
       # shape matches a real SG workflow + the landfast set_vcs_triggers call;
       # only the truly server-assigned fields (gh_webhook_url, *_hook_id,
-      # github_app_installation_id) are omitted.
-      VCSTriggers = try(var.workspaceOverrides[wsName].VCSTriggers, null) != null ? var.workspaceOverrides[wsName].VCSTriggers : (
+      # github_app_installation_id) are omitted. An override replaces the remap
+      # entirely; picked via a tuple because an override object rarely has the
+      # exact attribute set of the derived one (a conditional would refuse).
+      VCSTriggers = try([for c in [local.effective[wsName].VCSTriggers, (
         var.SGDefaultEnableVCSTriggers &&
         length(data.tfe_workspace.data[wsName].vcs_repo) > 0 &&
         contains(["GITHUB_COM", "GITLAB_COM", "BITBUCKET_ORG", "AZURE_DEVOPS"], local.sourceKind[wsName])
@@ -174,7 +208,7 @@ locals {
           )
         }
         : null
-      )
+      )] : c if c != null][0], null)
 
       MiniSteps = {
         "wfChaining" : {
@@ -191,7 +225,7 @@ locals {
         }
       }
 
-      Approvers = try(var.workspaceOverrides[wsName].Approvers, null) != null ? var.workspaceOverrides[wsName].Approvers : (data.tfe_workspace.data[wsName].auto_apply ? [] : var.SGDefaultWfApprovers)
+      Approvers = local.effective[wsName].Approvers != null ? local.effective[wsName].Approvers : (data.tfe_workspace.data[wsName].auto_apply ? [] : var.SGDefaultWfApprovers)
 
       # terraformVersion is omitted (not null) when the execution preset should
       # decide: the SG API only fills in keys that are absent from the payload.
@@ -209,8 +243,7 @@ locals {
 
   # Group payloads by TFC project so each project imports into its own SG
   # workflow group (the bulk import takes a single --workflow-group per file).
-  workflowProject = { for wsName, wsId in data.tfe_workspace_ids.data.ids : wsName => data.tfe_workspace.data[wsName].project_id }
-  projectsUsed    = toset(values(local.workflowProject))
+  projectsUsed = toset(values(local.workflowProject))
 
   payloadByProject = {
     for pid in local.projectsUsed :
@@ -223,14 +256,34 @@ locals {
     pid => replace(lower(try(local.projectNames[pid], pid)), "/[^a-z0-9-]+/", "-")
   }
 
+  # SG workflow group per project: projectOverrides[<name>].workflowGroup, else
+  # tfc-<segment>; and the same per workspace for the payload and the summary.
+  projectGroups = {
+    for pid in local.projectsUsed :
+    pid => try(var.projectOverrides[try(local.projectNames[pid], pid)].workflowGroup, null) != null ? var.projectOverrides[try(local.projectNames[pid], pid)].workflowGroup : "tfc-${local.projectFileSegment[pid]}"
+  }
+  workflowGroups = { for name, pid in local.workflowProject : name => local.projectGroups[pid] }
+
   # Machine-readable migration summary (also rendered to markdown).
   summary = {
     organization           = var.tfOrg
     workspaceCount         = length(local.workflowNames)
     projectWorkspaceCounts = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
-    skippedSensitiveVars   = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
-    strippedVars           = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
-    ignoreVarPatterns      = var.ignoreVarPatterns
+    # Per project (raw TFC name): payload file segment, SG workflow group, size.
+    projects = {
+      for pid in local.projectsUsed :
+      try(local.projectNames[pid], pid) => {
+        segment        = local.projectFileSegment[pid]
+        workflowGroup  = local.projectGroups[pid]
+        workspaceCount = length(local.payloadByProject[pid])
+      }
+    }
+    workspaceProjects       = local.workspaceProjects # ws => raw TFC project name
+    workflowGroups          = local.workflowGroups    # ws => SG workflow group
+    unknownProjectOverrides = local.unknownProjectOverrides
+    skippedSensitiveVars    = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
+    strippedVars            = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
+    ignoreVarPatterns       = var.ignoreVarPatterns
     # Version policy, so the later phases can explain what each workflow runs.
     terraformVersionSource    = var.SGTerraformVersionSource
     terraformVersionDefault   = var.SGDefaultTerraformVersion # null = the execution preset decides

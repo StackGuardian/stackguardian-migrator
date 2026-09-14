@@ -4,9 +4,12 @@
 - Workspaces processed: ${summary.workspaceCount}
 
 ## Workflows per project
-%{ for project, count in summary.projectWorkspaceCounts ~}
-- ${project}: ${count}
+%{ for project, info in summary.projects ~}
+- ${project}: ${info.workspaceCount} -> workflow group ${info.workflowGroup} (sg-payload.${info.segment}.json)
 %{ endfor ~}
+%{ if length(summary.unknownProjectOverrides) > 0 ~}
+- WARNING: projectOverrides keys matching no TFC project (ignored): ${join(", ", summary.unknownProjectOverrides)}
+%{ endif ~}
 
 ## Skipped sensitive variables
 These are not migrated (TFC never returns sensitive values). Recreate them as SG secrets after import.

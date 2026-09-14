@@ -130,18 +130,42 @@ variable "forceStateRefresh" {
   type        = bool
 }
 
+# The override maps are typed "any" on purpose: with map(object({ ... =
+# optional(any) })) Terraform requires every entry to resolve each attribute to
+# one common type, so one workspace setting RunnerConstraints while another
+# omits it fails with "attribute types must all match for conversion to map".
+# The validations below check the field names instead; the values are shaped
+# like the SGDefault* variables they override.
+locals {
+  overrideFieldNames = [
+    "DeploymentPlatformConfig",  # list, like SGDefaultDeploymentPlatformConfig
+    "RunnerConstraints",         # object { type, names }, like SGDefaultRunnerConstraints
+    "Approvers",                 # list(string)
+    "vcsAuthIntegrationID",      # string
+    "vcsRepoPrefix",             # string
+    "sourceConfigDestKind",      # string
+    "terraformVersion",          # string, sent as-is (e.g. TERRAFORM-1.7.5)
+    "extraEnvironmentVariables", # list of SG EnvironmentVariables entries
+    "VCSTriggers",               # object, replaces the derived triggers entirely
+  ]
+}
+
 variable "workspaceOverrides" {
   default     = {}
-  description = "Per-workspace overrides keyed by TFC/TFE workspace name. Any field set here takes precedence over the matching SGDefault* value for that workspace only."
-  type = map(object({
-    DeploymentPlatformConfig  = optional(list(any))
-    RunnerConstraints         = optional(any)
-    Approvers                 = optional(list(string))
-    vcsAuthIntegrationID      = optional(string)
-    vcsRepoPrefix             = optional(string)
-    sourceConfigDestKind      = optional(string)
-    terraformVersion          = optional(string)
-    extraEnvironmentVariables = optional(list(any), [])
-    VCSTriggers               = optional(any)
-  }))
+  description = "Per-workspace overrides keyed by TFC/TFE workspace name. Any field set here wins over the matching projectOverrides and SGDefault* values for that workspace only. Fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers (see terraform.tfvars.example)."
+  type        = any
+  validation {
+    condition     = can([for name, o in var.workspaceOverrides : keys(o)]) && alltrue([for name, o in var.workspaceOverrides : length(setsubtract(keys(o), ["DeploymentPlatformConfig", "RunnerConstraints", "Approvers", "vcsAuthIntegrationID", "vcsRepoPrefix", "sourceConfigDestKind", "terraformVersion", "extraEnvironmentVariables", "VCSTriggers"])) == 0])
+    error_message = "workspaceOverrides must map workspace names to objects with only these fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers."
+  }
+}
+
+variable "projectOverrides" {
+  default     = {}
+  description = "Per-project overrides keyed by the TFC/TFE project name (as shown in TFC, case-sensitive). Applied to every workspace of that project: workspaceOverrides win over these, these win over the SGDefault* values. Same fields as workspaceOverrides plus workflowGroup, which replaces the default StackGuardian workflow group tfc-<project> for the whole project (the payload file keeps its sg-payload.<project>.json name). Keys that match no project are listed in migration-summary.md (unknownProjectOverrides)."
+  type        = any
+  validation {
+    condition     = can([for name, o in var.projectOverrides : keys(o)]) && alltrue([for name, o in var.projectOverrides : length(setsubtract(keys(o), ["DeploymentPlatformConfig", "RunnerConstraints", "Approvers", "vcsAuthIntegrationID", "vcsRepoPrefix", "sourceConfigDestKind", "terraformVersion", "extraEnvironmentVariables", "VCSTriggers", "workflowGroup"])) == 0])
+    error_message = "projectOverrides must map TFC project names to objects with only these fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers, workflowGroup."
+  }
 }

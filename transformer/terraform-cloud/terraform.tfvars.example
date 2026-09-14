@@ -75,8 +75,26 @@ SGDefaultEnableVCSTriggers = true
 # Re-pull state for every workspace on each apply. Leave false for idempotent runs.
 forceStateRefresh = false
 
+# Per-project settings, keyed by the TFC project name (as shown in TFC). Every
+# workspace of the project gets them; precedence is
+#   workspaceOverrides > projectOverrides > SGDefault*.
+# workflowGroup picks the StackGuardian workflow group for the whole project
+# (default tfc-<project>): an existing group is reused, a missing one created.
+# projectOverrides = {
+#   "platform-azure" = {
+#     workflowGroup = "azure-landing-zone"
+#     DeploymentPlatformConfig = [
+#       { "kind" : "AZURE_OIDC", "config" : { "integrationId" : "/integrations/azure-prod" } }
+#     ]
+#     vcsAuthIntegrationID = "/integrations/github_platform"
+#     Approvers            = ["platform-lead@example.com"]
+#     RunnerConstraints    = { "type" : "private", "names" : ["azure-runners"] }
+#   }
+# }
+
 # Per-workspace overrides, keyed by workspace name. Any field set here wins over
-# the SGDefault* value above, for that workspace only. All fields are optional.
+# the projectOverrides and SGDefault* values, for that workspace only. All
+# fields are optional.
 # workspaceOverrides = {
 #   "prod-networking" = {
 #     DeploymentPlatformConfig = [
