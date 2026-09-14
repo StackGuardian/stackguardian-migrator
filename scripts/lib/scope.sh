@@ -2,22 +2,37 @@
 # Run scope for the migrator (sourced; needs tools.sh, lib/tfvars.sh, jq).
 #
 # terraform.tfvars holds the widest scope (workspacenames, tfWorkspaceIgnoreNames,
-# the tag filters) and the CLI narrows one run:
+# tfProjects, the tag filters) and the CLI narrows one run:
+#   --project NAME|SLUG       replaces tfProjects for the run
 #   --workspace GLOB          replaces workspacenames for the run ("*" = all)
 #   --exclude-workspace GLOB  adds to tfWorkspaceIgnoreNames for the run
 # Every phase applies the same selection: apply hands the lists to terraform,
-# the later phases match them against the payload entries (ResourceName), so
-# 'import --workspace "team-*"' picks the workflows 'apply --workspace "team-*"'
-# exported. Globs support * and ?.
+# the later phases match them against the payload files (project slug) and
+# entries (ResourceName), so 'import --workspace "team-*"' picks the workflows
+# 'apply --workspace "team-*"' exported. Globs support * and ?.
 
 PROJECT_FILTER=()
 WS_FILTER=()
 WS_EXCLUDE=()
 
 # names_json <name>... — the arguments as a JSON array of strings.
-names_json() { printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
+names_json() { _scope_jq; printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
 
 _scope_jq() { JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"; }
+
+# slug_of <project name> — the payload file segment of a TFC project: the same
+# rule as the transformer's projectSlugs (lowercase, runs of anything but
+# [a-z0-9-] become "-"), so --project accepts the name or the slug.
+slug_of() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g'; }
+
+# project_selected <segment> — exit 0 when no --project is set or one of them
+# names this payload segment.
+project_selected() {
+  local p
+  [ "${#PROJECT_FILTER[@]}" -eq 0 ] && return 0
+  for p in "${PROJECT_FILTER[@]}"; do [ "$(slug_of "$p")" = "$1" ] && return 0; done
+  return 1
+}
 
 # ws_narrowed — exit 0 when a CLI flag restricts the run ("*" alone does not,
 # so a CI run over everything keeps the unchanged-file skip).
@@ -95,6 +110,7 @@ SCOPE_TFVAR_ARGS=()
 scope_tfvar_args() {
   SCOPE_TFVAR_ARGS=()
   _scope_jq
+  [ "${#PROJECT_FILTER[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "tfProjects=$(names_json "${PROJECT_FILTER[@]}")")
   [ "${#WS_FILTER[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "workspacenames=$(names_json "${WS_FILTER[@]}")")
   [ "${#WS_EXCLUDE[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "tfWorkspaceIgnoreNames=$(ws_exclude_json)")
   return 0
@@ -103,11 +119,12 @@ scope_tfvar_args() {
 # scope_describe — one line for the log: what the CLI flags select.
 scope_describe() {
   local out=""
-  [ "${#WS_FILTER[@]}" -gt 0 ] && out="workspaces ${WS_FILTER[*]}"
+  [ "${#PROJECT_FILTER[@]}" -gt 0 ] && out="project(s) ${PROJECT_FILTER[*]}"
+  [ "${#WS_FILTER[@]}" -gt 0 ] && out="${out:+$out, }workspaces ${WS_FILTER[*]}"
   [ "${#WS_EXCLUDE[@]}" -gt 0 ] && out="${out:+$out, }excluding ${WS_EXCLUDE[*]}"
   printf '%s' "$out"
 }
 
 # scope_sha_input — the CLI scope as a string for the apply phase hash, so a
 # run with a different selection re-runs the export.
-scope_sha_input() { printf '%s|%s' "$(ws_filter_json)" "$(ws_exclude_json)"; }
+scope_sha_input() { printf '%s|%s|%s' "${PROJECT_FILTER[*]-}" "$(ws_filter_json)" "$(ws_exclude_json)"; }

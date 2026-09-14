@@ -17,6 +17,10 @@ tfWorkspaceIgnoreTags = null
 # after the filters above. sg-migrate.sh --exclude-workspace adds to this list for one run.
 tfWorkspaceIgnoreNames = []
 
+# Only these TFC projects, by name or slug (e.g. ["Platform", "my-first-project"]);
+# [] = every project. sg-migrate.sh --project sets this for one run.
+tfProjects = []
+
 # Directory to export Terraform files to
 exportPath = "export"
 

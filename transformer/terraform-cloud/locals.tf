@@ -1,22 +1,34 @@
 locals {
   # Workspace selection. data.tfe_workspace_ids applies workspacenames and the
-  # tag filters inside TFC (name => id); tfWorkspaceIgnoreNames has no provider
-  # equivalent and is applied here, so everything below iterates
-  # local.selectedWorkspaces rather than the data source.
+  # tag filters inside TFC (name => id). tfWorkspaceIgnoreNames and tfProjects
+  # have no provider equivalent and are applied here, so everything below
+  # iterates local.selectedWorkspaces rather than the data source.
   ignoreNameRegexes = [for p in var.tfWorkspaceIgnoreNames : "^${replace(replace(replace(p, ".", "\\."), "*", ".*"), "?", ".")}$"]
   excludedWorkspaces = sort([
     for name, id in data.tfe_workspace_ids.data.ids : name
     if anytrue([for r in local.ignoreNameRegexes : can(regex(r, name))])
   ])
-  selectedWorkspaces = {
+  # Name filters applied; data.tfe_workspace is read for these, because the
+  # project of a workspace is only known from there.
+  namedWorkspaces = {
     for name, id in data.tfe_workspace_ids.data.ids : name => id if !contains(local.excludedWorkspaces, name)
+  }
+  # tfProjects entries are TFC project names or their slug (the payload file
+  # segment); [] = every project.
+  projectSelectors = [for p in var.tfProjects : replace(lower(p), "/[^a-z0-9-]+/", "-")]
+  unknownProjects  = sort([for p in var.tfProjects : p if !contains(values(local.projectSlugs), replace(lower(p), "/[^a-z0-9-]+/", "-"))])
+  selectedWorkspaces = {
+    for name, id in local.namedWorkspaces : name => id
+    if length(var.tfProjects) == 0 || contains(local.projectSelectors, try(local.projectSlugs[data.tfe_workspace.data[name].project_id], data.tfe_workspace.data[name].project_id))
   }
   workflowIds   = [for name, id in local.selectedWorkspaces : id]
   workflowNames = [for name, id in local.selectedWorkspaces : name]
 
   # project id => project name, used to name the per-project payload files and
-  # to set a human-readable WorkflowGroup name in the payload.
+  # to set a human-readable WorkflowGroup name in the payload; and its slug,
+  # the filesystem-safe segment of the payload filename (sg-payload.<slug>.json).
   projectNames = { for p in data.tfe_projects.data.projects : p.id => p.name }
+  projectSlugs = { for pid, name in local.projectNames : pid => replace(lower(name), "/[^a-z0-9-]+/", "-") }
 
   # TFC project per workspace: id, and the raw name (falls back to the id when
   # the project is not visible to the token).
@@ -282,7 +294,7 @@ locals {
   # project id => filesystem-safe segment for the per-project payload filename.
   projectFileSegment = {
     for pid in local.projectsUsed :
-    pid => replace(lower(try(local.projectNames[pid], pid)), "/[^a-z0-9-]+/", "-")
+    pid => try(local.projectSlugs[pid], replace(lower(pid), "/[^a-z0-9-]+/", "-"))
   }
 
   # SG workflow group per project: projectOverrides[<name>].workflowGroup, else
@@ -297,9 +309,12 @@ locals {
   summary = {
     organization   = var.tfOrg
     workspaceCount = length(local.workflowNames)
-    # Workspaces matched by the TFC filters but dropped by tfWorkspaceIgnoreNames.
+    # Workspaces matched by the TFC filters but dropped by tfWorkspaceIgnoreNames,
+    # and the project selection ([] = all; unknownProjects = selectors matching none).
     excludedWorkspaces     = local.excludedWorkspaces
     tfWorkspaceIgnoreNames = var.tfWorkspaceIgnoreNames
+    tfProjects             = var.tfProjects
+    unknownProjects        = local.unknownProjects
     projectWorkspaceCounts = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
     # Per project (raw TFC name): payload file segment, SG workflow group, size.
     projects = {

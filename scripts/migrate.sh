@@ -120,7 +120,8 @@ Options:
   --dry-run          With 'import': show the per-workflow plan and stop (nothing is created)
   --no-secret-stubs  Do not create placeholder SG secrets for sensitive variables
   --fresh            Ignore the saved run state: redo every phase and re-import everything
-  --project SEG      Only handle this TFC project (repeatable; matches sg-payload.<SEG>.json)
+  --project NAME     Only handle this TFC project, by name or slug (repeatable; apply exports
+                     only its workspaces, later phases use sg-payload.<slug>.json)
   --workspace GLOB   Only handle matching workspaces (repeatable; "team-*", "*" = all;
                      replaces workspacenames for this run, every phase selects the same ones)
   --exclude-workspace GLOB
@@ -256,11 +257,12 @@ payload_files() {
   shopt -s nullglob
   PF=("$EXPORT_DIR"/sg-payload.*.json)
   shopt -u nullglob
+  # --project accepts the TFC name or the payload segment (lib/scope.sh).
   if [ "${#PROJECT_FILTER[@]}" -gt 0 ]; then
     keep=()
     for f in "${PF[@]}"; do
       seg="$(seg_of "$f")"
-      case " ${PROJECT_FILTER[*]} " in *" $seg "*) keep+=("$f") ;; esac
+      project_selected "$seg" && keep+=("$f")
     done
     PF=(${keep[@]+"${keep[@]}"})
   fi
@@ -1134,7 +1136,7 @@ _sg_migrate() {
     '--dry-run[With import: show the plan and stop]' \\
     '--no-secret-stubs[Do not create placeholder SG secrets for sensitive vars]' \\
     '--fresh[Ignore saved run state: redo every phase]' \\
-    '*--project[Only this TFC project segment]:segment' \\
+    '*--project[Only this TFC project (name or slug)]:project' \\
     '*--workspace[Only matching workspaces (glob)]:glob' \\
     '*--exclude-workspace[Leave matching workspaces out (glob)]:glob' \\
     '--all[With clean: also remove config]' \\

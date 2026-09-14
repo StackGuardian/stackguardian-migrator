@@ -5,6 +5,12 @@
 %{ if length(summary.excludedWorkspaces) > 0 ~}
 - Excluded by name (tfWorkspaceIgnoreNames ${jsonencode(summary.tfWorkspaceIgnoreNames)}): ${join(", ", summary.excludedWorkspaces)}
 %{ endif ~}
+%{ if length(summary.tfProjects) > 0 ~}
+- Limited to projects (tfProjects): ${join(", ", summary.tfProjects)}
+%{ endif ~}
+%{ if length(summary.unknownProjects) > 0 ~}
+- WARNING: tfProjects entries matching no TFC project: ${join(", ", summary.unknownProjects)}
+%{ endif ~}
 
 ## Workflows per project
 %{ for project, info in summary.projects ~}

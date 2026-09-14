@@ -33,6 +33,12 @@ variable "tfWorkspaceIgnoreTags" {
   type        = list(string)
 }
 
+variable "tfProjects" {
+  default     = []
+  description = "TFC/TFE projects to export, by name (as shown in TFC) or by slug (the payload file segment, e.g. my-first-project); [] = every project. Applied after the workspace filters. Entries matching no project are listed in migration-summary.md (unknownProjects). The orchestrator's --project sets this for one run."
+  type        = list(string)
+}
+
 variable "tfWorkspaceIgnoreNames" {
   default     = []
   description = "Workspace names (globs, * and ? supported) to leave out of the export, applied after workspacenames and the tag filters. Excluded workspaces are listed in migration-summary.md. The orchestrator's --exclude-workspace adds to this list for one run."

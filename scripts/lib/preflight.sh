@@ -49,23 +49,46 @@ preflight_tfc() {
   # tags, exclude names) with the CLI scope applied (lib/scope.sh, when loaded),
   # so the count is the one the apply that follows will export.
   if body="$(tfc_list_workspaces "$org" 2>/dev/null)"; then
-    local names ignore_names
+    local names ignore_names projects from_cli=0 p slug hit
+    PF_TFC_PROJECTS="$(tfc_list_projects "$org" 2>/dev/null || echo '[]')"
     names="$(tfvars_get_json .workspacenames)"
     ignore_names="$(tfvars_get_json .tfWorkspaceIgnoreNames)"
+    projects="$(tfvars_get_json .tfProjects)"
+    [ "$projects" = "null" ] && projects='[]'
     if declare -F ws_exclude_json >/dev/null; then
       [ "${#WS_FILTER[@]}" -gt 0 ] && names="$(names_json "${WS_FILTER[@]}")"
+      [ "${#PROJECT_FILTER[@]}" -gt 0 ] && { projects="$(names_json "${PROJECT_FILTER[@]}")"; from_cli=1; }
       ignore_names="$(ws_exclude_json)"
     fi
     sel="$(tfc_select_workspaces "$body" "$names" "$(tfvars_get_json .tfWorkspaceTags)" "$(tfvars_get_json .tfWorkspaceIgnoreTags)" "$ignore_names")"
+    # Project selection (tfProjects / --project): names or slugs; a selector
+    # that names no project is a typo — fatal from the CLI, a warning in tfvars.
+    if [ "$projects" != "[]" ] && [ "$PF_TFC_PROJECTS" != "[]" ]; then
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        slug="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g')"
+        hit="$(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r --arg s "$slug" '[.[] | select((.name | ascii_downcase | gsub("[^a-z0-9-]+"; "-")) == $s) | .name] | first // empty')"
+        if [ -n "$hit" ]; then
+          pf_ok "project '$p' is TFC project '$hit'"
+        elif [ "$from_cli" -eq 1 ]; then
+          pf_fail "--project '$p' matches no TFC project in '$org' (projects: $(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r '[.[].name] | join(", ")'))"
+        else
+          pf_warn "tfProjects entry '$p' matches no TFC project in '$org' (projects: $(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r '[.[].name] | join(", ")'))"
+        fi
+      done < <(printf '%s' "$projects" | "$jqb" -r '.[]')
+      sel="$(printf '%s' "$sel" | "$jqb" -c --argjson pr "$PF_TFC_PROJECTS" --argjson want "$projects" '
+        ($want | map(ascii_downcase | gsub("[^a-z0-9-]+"; "-"))) as $w
+        | ($pr | map(select((.name | ascii_downcase | gsub("[^a-z0-9-]+"; "-")) as $s | $w | index($s) != null) | .id)) as $ids
+        | map(select(.project as $p | $ids | index($p) != null))')"
+    fi
     n="$(printf '%s' "$sel" | "$jqb" 'length')"
     if [ "$n" -gt 0 ]; then
       pf_ok "$n workspace(s) match the selection (of $(printf '%s' "$body" | "$jqb" 'length') in the org)"
     else
-      pf_warn "no workspace matches workspacenames/tfWorkspaceTags/tfWorkspaceIgnoreTags/tfWorkspaceIgnoreNames${WS_FILTER[*]:+ and the --workspace/--exclude-workspace flags} — apply would export nothing"
+      pf_warn "no workspace matches workspacenames/tfWorkspaceTags/tfWorkspaceIgnoreTags/tfWorkspaceIgnoreNames/tfProjects${WS_FILTER[*]:+ and the --workspace/--exclude-workspace/--project flags} — apply would export nothing"
     fi
     PF_TFC_WORKSPACES="$body"
     PF_TFC_SELECTED="$sel"
-    PF_TFC_PROJECTS="$(tfc_list_projects "$org" 2>/dev/null || echo '[]')"
   else
     pf_warn "could not list workspaces for '$org' (HTTP $TFC_HTTP_CODE)"
   fi
