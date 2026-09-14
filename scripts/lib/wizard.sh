@@ -116,6 +116,7 @@ wizard_tfc() {
   W_TFC_REPO_PREFIX=""
   W_TFC_VCS_OTHER=0
   W_SEL_PROJECTS_JSON='[]'
+  W_SEL_WS_JSON='[]'
   projects='[]'
   if [ "$W_TFC_DISCOVERY" -eq 1 ] && ws="$(tfc_list_workspaces "$W_TFORG" 2>/dev/null)"; then
     W_TFC_WS_JSON="$ws"
@@ -158,6 +159,7 @@ wizard_tfc() {
     W_WS_COUNT="$(printf '%s' "$sel" | "$jqb" 'length')"
     W_WS_ABOVE_CEILING="$(printf '%s' "$sel" | "$jqb" '[.[] | select((.terraform_version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | select(((.terraform_version | split(".") | map(tonumber)) as $v | ($v[0] > 1) or ($v[0] == 1 and $v[1] > 5) or ($v[0] == 1 and $v[1] == 5 and $v[2] > 7)))] | length')"
     W_GROUPS="$(_w_project_counts "$sel" "$projects" 1)"
+    W_SEL_WS_JSON="$sel"
     # The selected projects (raw name, payload segment, workspace count), most
     # workspaces first — drives the per-project step and the review.
     W_SEL_PROJECTS_JSON="$(printf '%s' "$sel" | "$jqb" -c --argjson pr "$projects" '
@@ -575,8 +577,48 @@ wizard_review() {
   sg_row "Terraform version" "$tf"
   [ "${W_DPC_PLACEHOLDER:-0}" -eq 1 ] && sg_warn "cloud connector left as a placeholder — edit SGDefaultDeploymentPlatformConfig in $(sg_rel "$TFVARS") before 'apply'"
   [ "${W_TFC_VCS_OTHER:-0}" -gt 0 ] && sg_warn "$W_TFC_VCS_OTHER workspace(s) use a different VCS provider than the default above — give them their own connector/prefix via projectOverrides or workspaceOverrides in $(sg_rel "$TFVARS")"
+  k="$(printf '%s' "${W_WS_TEMPLATE_JSON:-{\}}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
+  [ "$k" -gt 0 ] && sg_dim "the file also gets a commented, ready-to-uncomment entry per project and per workspace ($k) for later fine-tuning"
   sg_dim "approvers and the repo URL prefix can be edited in $(sg_rel "$TFVARS")"
   sg_confirm "Write $(sg_rel "$TFVARS")?" Y
+}
+
+# wizard_templates — commented, ready-to-uncomment projectOverrides /
+# workspaceOverrides entries for every selected project and workspace that has
+# no entry yet, pre-filled with the effective values (the global picks; a
+# workspace's terraformVersion is what it runs in TFC). Rendered as comments
+# by tfvars_write, so users edit a copy instead of typing field names.
+wizard_templates() {
+  local jqb runner tfv
+  jqb="$(sg_resolve jq sg_ensure_jq)"
+  runner="${W_RUNNER_JSON:-null}"
+  [ "$runner" = "null" ] && runner='{"type":"shared"}'
+  tfv="${W_TF_VERSION:-null}"
+  [ "$tfv" = "null" ] && tfv="TERRAFORM-1.5.7"
+  W_PROJECT_TEMPLATE_JSON="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" -c --argjson have "${W_PROJECT_OVERRIDES_JSON:-{\}}" \
+    --argjson dpc "${W_DPC_JSON:-[]}" --arg vcs "${W_VCS_INTEGRATION:-}" --argjson runner "$runner" --argjson appr "${W_APPROVERS_JSON:-[]}" '
+    map(select(.name as $n | ($have | has($n)) | not))
+    | map({key: .name, value: {workflowGroup: ("tfc-" + .segment), DeploymentPlatformConfig: $dpc, vcsAuthIntegrationID: $vcs, RunnerConstraints: $runner, Approvers: $appr}})
+    | from_entries' 2>/dev/null || echo '{}')"
+  W_PROJECT_TEMPLATE_NOTES="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" -c 'map({key: .name, value: "\(.count) workspace(s)"}) | from_entries' 2>/dev/null || echo '{}')"
+  # A workspace's template shows what it gets today: its project's override
+  # where one exists, else the global pick.
+  W_WS_TEMPLATE_JSON="$(printf '%s' "${W_SEL_WS_JSON:-[]}" | "$jqb" -c --argjson have "${W_WS_OVERRIDES_JSON:-{\}}" --argjson projects "${W_PROJECT_OVERRIDES_JSON:-{\}}" --argjson pr "${W_SEL_PROJECTS_JSON:-[]}" \
+    --argjson dpc "${W_DPC_JSON:-[]}" --arg vcs "${W_VCS_INTEGRATION:-}" --argjson runner "$runner" --argjson appr "${W_APPROVERS_JSON:-[]}" --arg tfv "$tfv" '
+    ($pr | map({key: .id, value: .name}) | from_entries) as $names
+    | sort_by(.name)
+    | map(select(.name as $n | ($have | has($n)) | not))
+    | map(($projects[$names[.project] // ""] // {}) as $p
+        | {key: .name, value: {
+            DeploymentPlatformConfig: ($p.DeploymentPlatformConfig // $dpc),
+            vcsAuthIntegrationID: ($p.vcsAuthIntegrationID // $vcs),
+            RunnerConstraints: ($p.RunnerConstraints // $runner),
+            Approvers: ($p.Approvers // $appr),
+            terraformVersion: (if ((.terraform_version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) then "TERRAFORM-" + .terraform_version else ($p.terraformVersion // $tfv) end)}})
+    | from_entries' 2>/dev/null || echo '{}')"
+  W_WS_TEMPLATE_NOTES="$(printf '%s' "${W_SEL_WS_JSON:-[]}" | "$jqb" -c --argjson pr "${W_SEL_PROJECTS_JSON:-[]}" '
+    ($pr | map({key: .id, value: .name}) | from_entries) as $names
+    | map({key: .name, value: ("project " + ($names[.project] // .project // "?") + (if (.terraform_version // "") != "" then ", Terraform " + .terraform_version else "" end))}) | from_entries' 2>/dev/null || echo '{}')"
 }
 
 # wizard_run — the whole flow; returns non-zero when aborted.
@@ -587,6 +629,7 @@ wizard_run() {
   W_WS_OVERRIDES_JSON="$(tfvars_get_json .workspaceOverrides)"
   [ "$W_WS_OVERRIDES_JSON" = "null" ] && W_WS_OVERRIDES_JSON='{}'
   wizard_tfc && wizard_sg && wizard_projects && wizard_policy || { sg_err "init aborted"; return 1; }
+  wizard_templates
   wizard_review || { sg_log "nothing written"; return 1; }
   if [ -f "$TFVARS" ]; then
     cp "$TFVARS" "$TFVARS.bak"

@@ -58,24 +58,38 @@ tfvars_valid() {
 # _tfvars_hcl <json> — pretty-print a JSON value so it reads like HCL in the file.
 _tfvars_hcl() { printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" --indent 2 '.' 2>/dev/null || printf '%s' "$1"; }
 
-# _tfvars_map <json-object> — a name-keyed HCL map, one entry per key:
-#   "Project Name" = {
-#     workflowGroup = "platform-prod"
+# _tfvars_map <json-object> [notes-json] — a name-keyed HCL map, one entry
+# per key, attribute names aligned:
+#   "Project Name" = { # <note for that key, when given>
+#     workflowGroup            = "platform-prod"
 #     DeploymentPlatformConfig = [{"kind":"AWS_RBAC","config":{...}}]
 #   }
 # Attribute values are emitted as JSON, which HCL accepts and hcl2json
 # round-trips (tfvars_valid); ${ and %{ inside strings are escaped like
 # _tfvars_str does. "{}" for an empty or missing object.
 _tfvars_map() {
-  local j="${1:-}" out
+  local j="${1:-}" notes="${2:-}" out
   [ -n "$j" ] && [ "$j" != "null" ] || j='{}'
-  out="$(printf '%s' "$j" | "$(sg_resolve jq sg_ensure_jq)" -r '
+  [ -n "$notes" ] && [ "$notes" != "null" ] || notes='{}'
+  out="$(printf '%s' "$j" | "$(sg_resolve jq sg_ensure_jq)" -r --argjson notes "$notes" '
     def hcl: tojson | gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{");
+    def pad($w): . + (" " * ($w - length));
     if (. // {}) == {} then "{}" else
-      "{\n" + ([to_entries[] | "  \(.key | tojson) = {\n"
-        + ([.value | to_entries[] | "    \(.key) = \(.value | hcl)"] | join("\n")) + "\n  }"] | join("\n")) + "\n}"
+      "{\n" + ([to_entries[] | .key as $k | (.value | keys | map(length) | max // 0) as $w
+        | "  \($k | tojson) = {" + (if ($notes[$k] // "") != "" then " # \($notes[$k])" else "" end) + "\n"
+        + ([.value | to_entries[] | "    \(.key | pad($w)) = \(.value | hcl)"] | join("\n")) + "\n  }"] | join("\n")) + "\n}"
     end' 2>/dev/null)" || out=""
   printf '%s' "${out:-\{\}}"
+}
+
+# _tfvars_map_commented <json-object> [notes-json] — the map's entries (without
+# the outer braces), every line commented out: ready to be moved into the real
+# map above. Empty output for an empty map.
+_tfvars_map_commented() {
+  local out
+  out="$(_tfvars_map "$@")"
+  [ "$out" != "{}" ] || return 0
+  printf '%s\n' "$out" | sed '1d;$d' | sed 's/^/# /'
 }
 
 # _tfvars_str <text> — a quoted HCL string literal (backslashes, quotes and
@@ -97,9 +111,12 @@ _tfvars_str() {
 #   W_APPROVERS_JSON W_REPO_PREFIX W_VCS_INTEGRATION W_DPC_JSON W_RUNNER_JSON
 #   W_DEST_KIND W_TF_SOURCE W_TF_VERSION W_TRIGGERS W_IGNORE_PATTERNS_JSON
 #   W_STRIP_CLOUD W_PROJECT_OVERRIDES_JSON W_WS_OVERRIDES_JSON
+#   W_PROJECT_TEMPLATE_JSON/_NOTES W_WS_TEMPLATE_JSON/_NOTES (commented examples)
 # W_RUNNER_JSON and W_TF_VERSION may be the literal "null" (defer to the org's
 # execution preset). The two override maps are re-rendered from JSON, so a
 # hand-written block survives a re-run of the wizard (its inner comments do not).
+# The template maps are written as comments: one ready-to-uncomment entry per
+# selected project / workspace, pre-filled with the effective values.
 tfvars_write() {
   local dest="$1" host_line="" tf_version_hcl
   if [ "${W_TF_VERSION:-null}" = "null" ]; then tf_version_hcl="null"; else tf_version_hcl="$(_tfvars_str "$W_TF_VERSION")"; fi
@@ -180,12 +197,20 @@ forceStateRefresh = false
 # every workspace of that project. Precedence: workspaceOverrides >
 # projectOverrides > SGDefault*. See terraform.tfvars.example for every field.
 projectOverrides = $(_tfvars_map "${W_PROJECT_OVERRIDES_JSON:-}")
+$(if [ -n "${W_PROJECT_TEMPLATE_JSON:-}" ] && [ "$W_PROJECT_TEMPLATE_JSON" != "{}" ]; then
+    printf '\n# Ready to use: one entry per selected project, pre-filled with the values\n# chosen above. Move a project into projectOverrides = { } and change what should differ.\n'
+    _tfvars_map_commented "$W_PROJECT_TEMPLATE_JSON" "${W_PROJECT_TEMPLATE_NOTES:-}"
+  fi)
 
 # Per-workspace overrides, keyed by workspace name; they win over the project
 # and default values for that workspace only. Fields: DeploymentPlatformConfig,
 # RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix,
 # sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers.
 workspaceOverrides = $(_tfvars_map "${W_WS_OVERRIDES_JSON:-}")
+$(if [ -n "${W_WS_TEMPLATE_JSON:-}" ] && [ "$W_WS_TEMPLATE_JSON" != "{}" ]; then
+    printf '\n# Ready to use: one entry per selected workspace, pre-filled with what it gets\n# today (terraformVersion = what it runs in TFC). Move a workspace into\n# workspaceOverrides = { } and change what should differ.\n'
+    _tfvars_map_commented "$W_WS_TEMPLATE_JSON" "${W_WS_TEMPLATE_NOTES:-}"
+  fi)
 TFVARS
   tfvars_invalidate
 }
