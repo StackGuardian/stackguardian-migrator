@@ -126,6 +126,9 @@ Options:
                      replaces workspacenames for this run, every phase selects the same ones)
   --exclude-workspace GLOB
                      Leave matching workspaces out (repeatable; adds to tfWorkspaceIgnoreNames)
+  --tag NAME         Only workspaces carrying every given tag (repeatable; replaces
+                     tfWorkspaceTags for the export)
+  --exclude-tag NAME Leave workspaces carrying the tag out (repeatable; adds to tfWorkspaceIgnoreTags)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
@@ -1060,7 +1063,7 @@ finish_line() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --all -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1084,7 +1087,7 @@ _sg_migrate() {
   case "\$prev" in
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
     --mapping) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
-    --org | --concurrency | --project | --workspace | --exclude-workspace) COMPREPLY=(); return ;;
+    --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
   for w in "\${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
@@ -1139,6 +1142,8 @@ _sg_migrate() {
     '*--project[Only this TFC project (name or slug)]:project' \\
     '*--workspace[Only matching workspaces (glob)]:glob' \\
     '*--exclude-workspace[Leave matching workspaces out (glob)]:glob' \\
+    '*--tag[Only workspaces carrying this tag]:tag' \\
+    '*--exclude-tag[Leave workspaces carrying this tag out]:tag' \\
     '--all[With clean: also remove config]' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
@@ -1210,6 +1215,16 @@ main() {
       shift
       ;;
     --exclude-workspace=*) WS_EXCLUDE+=("${1#*=}") ;;
+    --tag)
+      TAG_FILTER+=("$2")
+      shift
+      ;;
+    --tag=*) TAG_FILTER+=("${1#*=}") ;;
+    --exclude-tag)
+      TAG_EXCLUDE+=("$2")
+      shift
+      ;;
+    --exclude-tag=*) TAG_EXCLUDE+=("${1#*=}") ;;
     -v | --verbose) VERBOSE=1 ;;
     --all) PURGE=1 ;;
     -h | --help)

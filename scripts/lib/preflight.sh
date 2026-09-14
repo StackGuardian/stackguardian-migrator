@@ -49,18 +49,22 @@ preflight_tfc() {
   # tags, exclude names) with the CLI scope applied (lib/scope.sh, when loaded),
   # so the count is the one the apply that follows will export.
   if body="$(tfc_list_workspaces "$org" 2>/dev/null)"; then
-    local names ignore_names projects from_cli=0 p slug hit
+    local names ignore_names tags ignore_tags projects from_cli=0 p slug hit
     PF_TFC_PROJECTS="$(tfc_list_projects "$org" 2>/dev/null || echo '[]')"
     names="$(tfvars_get_json .workspacenames)"
     ignore_names="$(tfvars_get_json .tfWorkspaceIgnoreNames)"
+    tags="$(tfvars_get_json .tfWorkspaceTags)"
+    ignore_tags="$(tfvars_get_json .tfWorkspaceIgnoreTags)"
     projects="$(tfvars_get_json .tfProjects)"
     [ "$projects" = "null" ] && projects='[]'
     if declare -F ws_exclude_json >/dev/null; then
       [ "${#WS_FILTER[@]}" -gt 0 ] && names="$(names_json "${WS_FILTER[@]}")"
       [ "${#PROJECT_FILTER[@]}" -gt 0 ] && { projects="$(names_json "${PROJECT_FILTER[@]}")"; from_cli=1; }
       ignore_names="$(ws_exclude_json)"
+      tags="$(scope_tags_json)"
+      ignore_tags="$(scope_ignore_tags_json)"
     fi
-    sel="$(tfc_select_workspaces "$body" "$names" "$(tfvars_get_json .tfWorkspaceTags)" "$(tfvars_get_json .tfWorkspaceIgnoreTags)" "$ignore_names")"
+    sel="$(tfc_select_workspaces "$body" "$names" "$tags" "$ignore_tags" "$ignore_names")"
     # Project selection (tfProjects / --project): names or slugs; a selector
     # that names no project is a typo — fatal from the CLI, a warning in tfvars.
     if [ "$projects" != "[]" ] && [ "$PF_TFC_PROJECTS" != "[]" ]; then
@@ -85,7 +89,9 @@ preflight_tfc() {
     if [ "$n" -gt 0 ]; then
       pf_ok "$n workspace(s) match the selection (of $(printf '%s' "$body" | "$jqb" 'length') in the org)"
     else
-      pf_warn "no workspace matches workspacenames/tfWorkspaceTags/tfWorkspaceIgnoreTags/tfWorkspaceIgnoreNames/tfProjects${WS_FILTER[*]:+ and the --workspace/--exclude-workspace/--project flags} — apply would export nothing"
+      local cli=""
+      declare -F scope_describe >/dev/null && cli="$(scope_describe)"
+      pf_warn "no workspace matches workspacenames/tfWorkspaceTags/tfWorkspaceIgnoreTags/tfWorkspaceIgnoreNames/tfProjects${cli:+ with the run scope ($cli)} — apply would export nothing"
     fi
     PF_TFC_WORKSPACES="$body"
     PF_TFC_SELECTED="$sel"
