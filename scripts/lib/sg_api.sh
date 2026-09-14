@@ -18,8 +18,10 @@ sg_http_code() {
 # errors, so never append a fallback to its output; normalize instead.
 sg_norm_code() { case "$1" in [0-9][0-9][0-9]) printf '%s' "$1" ;; *) printf '000' ;; esac; }
 
-# _sg_api <method> <url> [json-body] — shared request; body on stdout.
-_sg_api() {
+# sg_api_raw <method> <url> [json-body] — the request itself, no logging: the
+# response body goes to stdout whatever the status, SG_HTTP_CODE is set, exit
+# code per the contract above. Callers that need the error body use this.
+sg_api_raw() {
   local method="$1" url="$2" body="${3-}" tmp code
   tmp="$(mktemp)"
   if [ -n "$body" ]; then
@@ -33,24 +35,28 @@ _sg_api() {
   code="$(sg_norm_code "$code")"
   # shellcheck disable=SC2034  # read by callers
   SG_HTTP_CODE="$code"
-  case "$code" in
-  2*)
-    cat "$tmp"
-    rm -f "$tmp"
-    return 0
-    ;;
-  4*)
-    sg_err "  HTTP $code from ${url#"$SG_BASE_URL"}: $(head -c 400 "$tmp")"
+  cat "$tmp"
+  rm -f "$tmp"
+  case "$code" in 2*) return 0 ;; 4*) return 22 ;; *) return 1 ;; esac
+}
+
+# _sg_api <method> <url> [json-body] — sg_api_raw plus logging; body on stdout
+# only on 2xx (4xx/5xx are reported on stderr).
+_sg_api() {
+  local url="$2" tmp rc=0
+  tmp="$(mktemp)"
+  # Not a $(...) capture: SG_HTTP_CODE must survive into this shell.
+  sg_api_raw "$@" >"$tmp" || rc=$?
+  case "$rc" in
+  0) cat "$tmp" ;;
+  22)
+    sg_err "  HTTP $SG_HTTP_CODE from ${url#"$SG_BASE_URL"}: $(head -c 400 "$tmp")"
     if declare -F explain_api_error >/dev/null; then explain_api_error "$(head -c 2000 "$tmp")"; fi
-    rm -f "$tmp"
-    return 22
     ;;
-  *)
-    sg_warn "  HTTP $code from ${url#"$SG_BASE_URL"}"
-    rm -f "$tmp"
-    return 1
-    ;;
+  *) sg_warn "  HTTP $SG_HTTP_CODE from ${url#"$SG_BASE_URL"}" ;;
   esac
+  rm -f "$tmp"
+  return "$rc"
 }
 
 sg_api_get() { _sg_api GET "$1"; }
