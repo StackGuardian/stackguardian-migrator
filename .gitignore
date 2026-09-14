@@ -16,6 +16,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The migrator's sourced shell libraries are not Python build output.
+!scripts/lib/
 parts/
 sdist/
 var/
@@ -146,6 +148,8 @@ crash.log
 # control as they are data points which are potentially sensitive and subject
 # to change depending on the environment.
 *.tfvars
+# The init wizard keeps the previous file as terraform.tfvars.bak
+*.tfvars.bak
 
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in
@@ -162,5 +166,8 @@ export/*
 out/*
 zip
 zip/*
+
+# Migrator local cache + config (downloaded tool binaries, workflow-group map)
+.sg/
 
 .DS_Store

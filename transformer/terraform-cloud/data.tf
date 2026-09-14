@@ -5,8 +5,10 @@ data "tfe_workspace_ids" "data" {
   exclude_tags = var.tfWorkspaceIgnoreTags
 }
 
+# Read for every workspace that passed the name filters: the project filter
+# (tfProjects) needs the project_id from here, see local.selectedWorkspaces.
 data "tfe_workspace" "data" {
-  for_each = toset(local.workflowNames)
+  for_each = local.namedWorkspaces
 
   name         = each.key
   organization = var.tfOrg
@@ -16,4 +18,8 @@ data "tfe_variables" "data" {
   for_each = toset(local.workflowIds)
 
   workspace_id = each.key
+}
+
+data "tfe_projects" "data" {
+  organization = var.tfOrg
 }

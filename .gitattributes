@@ -1,0 +1,3 @@
+# Keep LF everywhere: a Git-for-Windows clone with core.autocrlf would turn the
+# bash scripts into CRLF and break them under WSL/Docker.
+* text=auto eol=lf
