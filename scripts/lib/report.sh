@@ -139,11 +139,15 @@ show_import_plan() {
           ((.RunnerConstraints // null) | if . == null then "preset" elif .type == "private" then "private" else "shared" end),
           (if (.VCSTriggers // null) != null then "yes" else "no" end),
           ((.VCSConfig.iacInputData.data // {}) | length),
-          (($S.skippedSensitiveVars // {})[$wsName] // [] | length)
+          (($S.skippedSensitiveVars // {})[$wsName] // [] | length),
+          $seg, $wsName, (($S.workspaceProjects // {})[$wsName] // "")
         ] | @tsv' "$f")"
     [ -n "$rows" ] && all_rows="$all_rows${all_rows:+$'\n'}$rows"
     names+=("$grp")
   done
+  # Kept for the run result: name, group, action, version, runner, triggers,
+  # vars, secrets, segment, workspace, project (tab-separated).
+  PLAN_ROWS_TSV="$all_rows"
   while IFS=$'\t' read -r name grp _; do [ -n "$name" ] && names+=("$name"); done <<<"$all_rows"
   wn="$(sg_maxlen 8 ${names[@]+"${names[@]}"})"
   while IFS=$'\t' read -r _ grp _; do [ -n "$grp" ] && groups+=("$grp"); done <<<"$all_rows"
@@ -152,7 +156,7 @@ show_import_plan() {
   rw=8
   case "$all_rows" in *$'\t'preset$'\t'*) rw="$(sg_maxlen 8 "preset (${SG_PRESET_RUNNER_SHORT:-})")" ;; esac
   printf "\n  %s%-${wn}s  %-${gn}s  %-7s %-28s %-${rw}s %-8s %-5s %s%s\n" "$C_BOLD" "WORKFLOW" "GROUP" "ACTION" "TERRAFORM" "RUNNER" "TRIGGERS" "VARS" "SECRETS" "$C_RESET" >&2
-  while IFS=$'\t' read -r name grp action tfv runner trig vars secrets; do
+  while IFS=$'\t' read -r name grp action tfv runner trig vars secrets _; do
     [ -n "$name" ] || continue
     if [ "$tfv" = "preset" ]; then tfv="preset${SG_PRESET_TFV:+ ($SG_PRESET_TFV)}"
     elif tf_version_above_ceiling "$tfv"; then tfv="${tfv#TERRAFORM-} -> ${SG_TF_FALLBACK_SHORT:-${SG_DEFAULT_TF_VERSION#TERRAFORM-}} (fallback)"
@@ -165,4 +169,67 @@ show_import_plan() {
   echo >&2
   sg_dim "ACTION create = new workflow; update = exists in the group, PATCHed with the current payload; skip = file already imported with identical content (--fresh re-imports)"
   sg_dim "TERRAFORM '-> fallback' = pinned above SG's managed ceiling (1.5.7, last FOSS release); 'preset' = left to the org's execution preset at import; SECRETS = sensitive vars recreated as placeholder secrets"
+}
+
+# write_run_result <outcome> — export/run-result.json and run-summary.md: what
+# this run planned or did, per workflow, for CI jobs (the markdown is made for
+# `cat export/run-summary.md >> "$GITHUB_STEP_SUMMARY"`). Outcome: planned (dry
+# run), blocked (plan problems), success, failed. Reads PLAN_ROWS_TSV
+# (show_import_plan), PLAN_GROUP_ROWS (plan_groups), PLAN_PROBLEMS, the merged
+# run state and CHECKLIST_OPEN. Needs JQ_BIN.
+write_run_result() {
+  local outcome="$1" json="$EXPORT_DIR/run-result.json" md="$EXPORT_DIR/run-summary.md" rows problems scope
+  rows="$(printf '%s\n' "${PLAN_ROWS_TSV:-}" | "$JQ_BIN" -Rc 'select(length > 0) | split("\t")
+    | {name: .[0], group: .[1], plan: .[2], terraformVersion: (.[3] | ltrimstr("TERRAFORM-")), runner: .[4], triggers: .[5],
+       vars: (.[6] | tonumber? // 0), secrets: (.[7] | tonumber? // 0), segment: .[8], workspace: .[9], project: .[10]}' | "$JQ_BIN" -sc .)"
+  problems="$(printf '%s\n' ${PLAN_PROBLEMS[@]+"${PLAN_PROBLEMS[@]}"} | "$JQ_BIN" -Rc 'select(length > 0)' | "$JQ_BIN" -sc .)"
+  scope="$("$JQ_BIN" -nc --argjson p "$([ "${#PROJECT_FILTER[@]}" -gt 0 ] && names_json "${PROJECT_FILTER[@]}" || echo '[]')" \
+    --argjson w "$([ "${#WS_FILTER[@]}" -gt 0 ] && names_json "${WS_FILTER[@]}" || echo '[]')" \
+    --argjson x "$([ "${#WS_EXCLUDE[@]}" -gt 0 ] && names_json "${WS_EXCLUDE[@]}" || echo '[]')" \
+    --argjson t "$([ "${#TAG_FILTER[@]}" -gt 0 ] && names_json "${TAG_FILTER[@]}" || echo '[]')" \
+    --argjson xt "$([ "${#TAG_EXCLUDE[@]}" -gt 0 ] && names_json "${TAG_EXCLUDE[@]}" || echo '[]')" \
+    '{projects: $p, workspaces: $w, excludeWorkspaces: $x, tags: $t, excludeTags: $xt}')"
+  state_read | "$JQ_BIN" --arg cmd "$PROG ${SG_RUN_ARGS:-}" --arg at "$(state_now)" --argjson took "$((SECONDS - RUN_T0))" \
+    --arg org "$ORG" --arg url "$SG_BASE_URL" --argjson dry "$([ "${DRY_RUN:-0}" -eq 1 ] && echo true || echo false)" \
+    --arg outcome "$outcome" --argjson scope "$scope" --argjson groups "${PLAN_GROUP_ROWS:-[]}" \
+    --argjson problems "$problems" --argjson rows "$rows" --argjson open "${CHECKLIST_OPEN:-0}" '
+    . as $st
+    | {
+      command: $cmd, at: $at, tookSeconds: $took, org: $org, apiUrl: $url, dryRun: $dry, outcome: $outcome,
+      scope: $scope, groups: $groups, problems: $problems,
+      workflows: [ $rows[] | . as $r
+        | ($st.import[$r.segment] // {}) as $imp | ($st.triggers[$r.segment] // {}) as $tr
+        | . + {
+          result: (if $outcome == "planned" or $outcome == "blocked" then "planned"
+                   elif $r.plan == "skip" then "skipped"
+                   elif (($imp.failed // []) | index($r.name)) != null then "failed"
+                   # planned as create but PATCHed: the probe workflow, imported once alone and once with its file
+                   elif (($imp.updated // []) | index($r.name)) != null and $r.plan != "create" then "updated"
+                   elif (($imp.imported // []) | index($r.name)) != null then "created"
+                   else "not-imported" end),
+          tfFallback: ((($imp.tf_fallback // []) | index($r.name)) != null),
+          state: (if (($imp.state_uploaded // []) | index($r.name)) != null then "uploaded"
+                  elif (($imp.state_failed // []) | index($r.name)) != null then "failed"
+                  elif (($imp.imported // []) | index($r.name)) != null then "none" else null end),
+          triggers: (if $r.triggers == "no" then "none"
+                     elif (($tr.failed // []) | index($r.name)) != null then "failed"
+                     elif (($tr.missing // []) | index($r.name)) != null then "missing"
+                     elif (($tr.unchanged // []) | index($r.name)) != null then "unchanged"
+                     elif (($tr.set // []) | index($r.name)) != null then "set" else null end)
+        } ],
+      checklistOpen: $open, checklist: "post-import-checklist.md"
+    }' >"$json"
+  "$JQ_BIN" -r '
+    "# StackGuardian migration: \(.outcome)", "",
+    "- Org: `\(.org)` (\(.apiUrl))", "- Command: `\(.command)`", "- Finished: \(.at) after \(.tookSeconds)s",
+    (if .dryRun then "- Dry run: nothing was created or changed in StackGuardian" else empty end),
+    (if (.scope | [.[]] | add | length) > 0 then "- Scope: \(.scope | to_entries | map(select(.value | length > 0) | "\(.key) \(.value | join(", "))") | join("; "))" else empty end),
+    "",
+    "| Workflow | Group | Plan | Result | Terraform | State | Triggers |", "|---|---|---|---|---|---|---|",
+    (.workflows[] | "| \(.name) | \(.group) | \(.plan) | \(.result) | \(.terraformVersion)\(if .tfFallback then " (fallback)" else "" end) | \(.state // "-") | \(.triggers // "-") |"),
+    "",
+    (if (.problems | length) > 0 then "## Problems", (.problems[] | "- \(.)"), "" else empty end),
+    (if .outcome == "planned" or .outcome == "blocked" then empty
+     elif .checklistOpen > 0 then "\(.checklistOpen) item(s) still need a human: see post-import-checklist.md"
+     else "Nothing left to do by hand." end)' "$json" >"$md"
 }

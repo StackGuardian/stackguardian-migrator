@@ -9,7 +9,7 @@
 #
 # Layout: { "phases": { "<phase>": {"at": iso, "input_sha": sha} },
 #           "import":  { "<seg>":   {"at": iso, "payload_sha": sha, "group": g,
-#                                    "imported": [...], "failed": [...],
+#                                    "imported": [...], "updated": [...], "failed": [...],
 #                                    "tf_fallback": [...],
 #                                    "state_uploaded": [...], "state_failed": [...]} },
 #           "triggers": { "<seg>":  {"at": iso, "group": g, "set": [...], "unchanged": [...],

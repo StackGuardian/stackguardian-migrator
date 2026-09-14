@@ -127,7 +127,9 @@ Options:
   --no-variable-sets Skip merging TFC Variable Set variables in the 'all' flow
   --no-vcs-triggers  Skip registering VCS triggers after import
   --skip-preflight   Skip the preflight checks (not recommended)
-  --dry-run          With 'import': show the per-workflow plan and stop (nothing is created)
+  --dry-run          With 'import' or 'all': show the per-workflow plan and stop before anything is
+                     created in StackGuardian ('all' still runs the local export phases);
+                     the plan is also written to export/run-result.json and run-summary.md
   --no-secret-stubs  Do not create placeholder SG secrets for sensitive variables
   --fresh            Ignore the saved run state: redo every phase and re-import everything
   --project NAME     Only handle this TFC project, by name or slug (repeatable; apply exports
@@ -370,8 +372,8 @@ group_for() {
 # name is unique within a group). Sets PLAN_TO_CREATE, PLAN_N_CREATE,
 # PLAN_TOTAL_WF; the caller shows the problems and stops after the full plan.
 plan_groups() {
-  local f seg grp count code status prev still n_still names fw gw i legacy=0 line
-  local -a paths=("$@") files=() groups=() counts=() statuses=()
+  local f seg grp count code status plain prev still n_still names fw gw i legacy=0 line
+  local -a paths=("$@") files=() groups=() counts=() statuses=() plains=()
   PLAN_TO_CREATE=" "
   PLAN_N_CREATE=0
   PLAN_TOTAL_WF=0
@@ -390,17 +392,17 @@ plan_groups() {
 
     code="$(wfgroup_http_code "$grp")"
     case "$code" in
-    200) status="${C_GREEN}reuse${C_RESET}" ;;
+    200) status="${C_GREEN}reuse${C_RESET}"; plain=reuse ;;
     404)
       if [ "$CREATE_GROUPS" -eq 1 ]; then
-        status="${C_YELLOW}create${C_RESET}"
+        status="${C_YELLOW}create${C_RESET}"; plain=create
         case "$PLAN_TO_CREATE" in *" $grp "*) ;; *)
           PLAN_TO_CREATE="$PLAN_TO_CREATE$grp "
           PLAN_N_CREATE=$((PLAN_N_CREATE + 1))
           ;;
         esac
       else
-        status="${C_RED}missing!${C_RESET}"
+        status="${C_RED}missing!${C_RESET}"; plain="missing!"
         PLAN_PROBLEMS+=("workflow group '$grp' ($(basename "$f")) does not exist and --no-create-groups is set — create it in StackGuardian or drop the flag")
       fi
       ;;
@@ -418,7 +420,7 @@ plan_groups() {
       still="$("$JQ_BIN" -nc --argjson ex "$(sg_list_workflows "$prev")" --argjson mine "$names" '[$mine[] | select(. as $n | $ex | index($n) != null)]')"
       n_still="$("$JQ_BIN" 'length' <<<"$still")"
       if [ "$n_still" -gt 0 ]; then
-        status="${C_RED}moved!${C_RESET}"
+        status="${C_RED}moved!${C_RESET}"; plain="moved!"
         PLAN_PROBLEMS+=("$(basename "$f"): $n_still workflow(s) already live in group '$prev' but the target is now '$grp' — StackGuardian cannot move workflows between groups; keep '$prev' (projectOverrides.\"<project>\".workflowGroup) or delete them from '$prev' first: $("$JQ_BIN" -r 'join(", ")' <<<"$still")")
       else
         sg_dim "$(basename "$f"): previous group '$prev' no longer holds these workflows — importing into '$grp'"
@@ -428,7 +430,12 @@ plan_groups() {
     groups+=("$grp")
     counts+=("$count")
     statuses+=("$status")
+    plains+=("$plain")
   done
+  # Plain copy of the table for the run result (report.sh write_run_result).
+  PLAN_GROUP_ROWS="$(for ((i = 0; i < ${#files[@]}; i++)); do
+    "$JQ_BIN" -nc --arg f "${files[i]}" --arg g "${groups[i]}" --argjson n "${counts[i]}" --arg s "${plains[i]}" '{file: $f, group: $g, workflows: $n, status: $s}'
+  done | "$JQ_BIN" -sc .)"
 
   # Two projects may share a group only when their workflow names do not overlap.
   while IFS= read -r line; do
@@ -755,6 +762,7 @@ import_bulk() {
           sg_log "  $name: updated"
           updated+=("$name")
           redo+=("$name")
+          printf '[updated] %s\n' "$name" >>"$out"
         else
           sg_warn "  $name: update failed — $(tail -n1 <<<"$err")"
         fi
@@ -782,7 +790,12 @@ import_bulk() {
   while IFS= read -r entry; do
     name="$("$JQ_BIN" -r '.ResourceName' <<<"$entry")"
     if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_create_workflow "$grp" "$entry" 2>/dev/null)"; then
-      if [ "$(tail -n1 <<<"$err")" = "updated" ]; then sg_log "  $name: already existed — updated"; else sg_log "  $name: created"; fi
+      if [ "$(tail -n1 <<<"$err")" = "updated" ]; then
+        sg_log "  $name: already existed — updated"
+        printf '[updated] %s\n' "$name" >>"$out"
+      else
+        sg_log "  $name: created"
+      fi
       upload_state "$grp" "$name" "$file" "$out" || true
     else
       # Same shape as sg-cli's failure line (parsed by do_import).
@@ -803,7 +816,7 @@ TF_CEILING_RE='Failed to create ([^:]+): 400: .*above the highest managed versio
 # the trigger pass see what was actually imported); each fallback is appended to
 # terraform-version-fallbacks.log. Any other per-workflow failure fails the file.
 do_import() {
-  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() st_ok=() st_failed=() name line tmp names work all_names patch
+  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() st_ok=() st_failed=() upd=() name line tmp names work all_names patch
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   # With --workspace / --exclude-workspace, import only the selected workflows
@@ -837,6 +850,8 @@ do_import() {
       st_ok+=("${BASH_REMATCH[1]}")
     elif [[ "$line" =~ ^\[state\]\ failed\ ([^:]+): ]]; then
       st_failed+=("${BASH_REMATCH[1]}")
+    elif [[ "$line" =~ ^\[updated\]\ (.+)$ ]]; then
+      upd+=("${BASH_REMATCH[1]}")
     fi
   done <"$out"
   rm -f "$out"
@@ -870,6 +885,7 @@ do_import() {
         printf '%s/%s: %s -> %s (above SG managed ceiling %s)\n' "$grp" "$name" "$line" "${SG_DEFAULT_TF_VERSION:-execution preset}" "$ceiling" >>"$EXPORT_DIR/terraform-version-fallbacks.log"
         grep -q "^\[state\] uploaded $name\$" "$out" && st_ok+=("$name")
         grep -q "^\[state\] failed $name:" "$out" && st_failed+=("$name")
+        grep -q "^\[updated\] $name\$" "$out" && upd+=("$name")
       fi
     done
     rm -f "$out"
@@ -886,7 +902,8 @@ do_import() {
     --argjson fallback "$([ "${#fb[@]}" -gt 0 ] && names_json "${fb[@]}" || echo '[]')" \
     --argjson st_ok "$([ "${#st_ok[@]}" -gt 0 ] && names_json "${st_ok[@]}" || echo '[]')" \
     --argjson st_failed "$([ "${#st_failed[@]}" -gt 0 ] && names_json "${st_failed[@]}" || echo '[]')" \
-    '{group: $g, payload_sha: $sha, imported: ($all - $failed), failed: $failed, tf_fallback: ($fallback - $failed),
+    --argjson upd "$([ "${#upd[@]}" -gt 0 ] && names_json "${upd[@]}" || echo '[]')" \
+    '{group: $g, payload_sha: $sha, imported: ($all - $failed), updated: ($upd - $failed | unique), failed: $failed, tf_fallback: ($fallback - $failed),
       state_uploaded: ($st_ok - $failed - $st_failed | unique), state_failed: ($st_failed - $failed | unique)}' \
     >"$EXPORT_DIR/.import-result.$seg.json"
 
@@ -1004,10 +1021,12 @@ cmd_import() {
   preset_labels
   show_import_plan "${PF[@]}"
   if [ "${#PLAN_PROBLEMS[@]}" -gt 0 ]; then
+    write_run_result blocked
     die "${#PLAN_PROBLEMS[@]} problem(s) block the import (the ✗ lines above) — nothing was changed in $ORG"
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    sg_success "dry run — nothing was created or changed"
+    write_run_result planned
+    sg_success "dry run — nothing was created or changed (plan written to $(sg_rel "$EXPORT_DIR")/run-result.json and run-summary.md)"
     return 0
   fi
 
@@ -1058,6 +1077,7 @@ cmd_import() {
   fi
   [ "$SECRET_STUBS" -eq 1 ] && create_secret_stubs
   write_checklist
+  write_run_result "$([ "$import_rc" -eq 0 ] && echo success || echo failed)"
   finish_line "$import_rc"
   return "$import_rc"
 }
@@ -1074,6 +1094,7 @@ finish_line() {
   else
     sg_success "migration complete in $took — nothing left to do by hand"
   fi
+  sg_dim "run result: $(sg_rel "$EXPORT_DIR")/run-result.json, run-summary.md (markdown, e.g. for a CI job summary)"
 }
 
 # Single source of truth for shell completion (keep in sync with the parser below
@@ -1153,7 +1174,7 @@ _sg_migrate() {
     '--no-variable-sets[Skip merging TFC Variable Sets]' \\
     '--no-vcs-triggers[Skip registering VCS triggers after import]' \\
     '--skip-preflight[Skip the preflight checks]' \\
-    '--dry-run[With import: show the plan and stop]' \\
+    '--dry-run[With import or all: show the plan and stop before importing]' \\
     '--no-secret-stubs[Do not create placeholder SG secrets for sensitive vars]' \\
     '--fresh[Ignore saved run state: redo every phase]' \\
     '*--project[Only this TFC project (name or slug)]:project' \\
@@ -1187,6 +1208,8 @@ ZSH
 # half-old, half-new.
 main() {
   local CMD=""
+  # Recorded in export/run-result.json (write_run_result).
+  SG_RUN_ARGS="$*"
   while [ $# -gt 0 ]; do
     case "$1" in
     -y | --yes) ASSUME_YES=1 ;;
