@@ -400,7 +400,7 @@ preflight_run() {
   local missing
   missing="$(tfvars_missing_keys | tr '\n' ' ')"
   if [ -n "$missing" ]; then
-    pf_warn "$(sg_rel "$TFVARS") predates these settings (defaults apply): ${missing% }— '$PROG init --upgrade' appends them with their defaults and comments"
+    pf_warn "$(sg_rel "$TFVARS") predates these settings (defaults apply): ${missing% } — '$PROG init --upgrade' appends them with their defaults and comments"
   fi
   case "$ctx" in
   apply)

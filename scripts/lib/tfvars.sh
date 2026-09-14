@@ -263,6 +263,11 @@ tfvars_variables_tf() { printf '%s' "${TFVARS_VARIABLES_TF:-$SG_REPO_ROOT/transf
 # tfvars_variable_names — every variable the module declares, in file order.
 tfvars_variable_names() { sed -nE 's/^variable "([^"]+)".*/\1/p' "$(tfvars_variables_tf)"; }
 
+# Advanced settings nobody needs in a normal file: never reported as missing
+# and never appended by init --upgrade (they stay documented in variables.tf
+# and the example, and --set / a hand edit still work).
+TFVARS_ADVANCED_KEYS="cloudAuthVarPatterns"
+
 # _tfvars_variable_attr <name> <attr> — a single-line attribute of a variable
 # block (`default = []`, `description = "..."`); empty when absent or when the
 # value spans several lines (a `{`/`[` with nothing after it).
@@ -285,6 +290,7 @@ tfvars_missing_keys() {
   local have
   have="$(tfvars_json | "$(sg_resolve jq sg_ensure_jq)" -r 'keys[]')"
   tfvars_variable_names | while IFS= read -r k; do
+    case " $TFVARS_ADVANCED_KEYS " in *" $k "*) continue ;; esac
     grep -qx -- "$k" <<<"$have" && continue
     grep -qE "^# ?$k *=" "$TFVARS" 2>/dev/null && continue
     printf '%s\n' "$k"
