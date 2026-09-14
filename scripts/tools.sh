@@ -47,10 +47,12 @@ sg_rel() {
   esac
 }
 
-sg_log() { printf '%s[sg-migrate]%s %s\n' "$C_CYAN" "$C_RESET" "$*" >&2; }
-sg_warn() { printf '%s[sg-migrate] WARN%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
-sg_err() { printf '%s[sg-migrate] ERROR%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*" >&2; }
-sg_success() { printf '%s[sg-migrate] ✓%s %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$*" >&2; }
+# Phase-level lines, no prefix: plain progress, "! warning", "✗ error", "✓ done".
+# (Item lines — one per workflow or check — use the indented sg_ok/sg_bad/sg_note below.)
+sg_log() { printf '%s\n' "$*" >&2; }
+sg_warn() { printf '%s!%s %s\n' "$C_YELLOW$C_BOLD" "$C_RESET" "$*" >&2; }
+sg_err() { printf '%s✗%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*" >&2; }
+sg_success() { printf '%s✓%s %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$*" >&2; }
 sg_step() { printf '\n%s==> %s%s\n' "$C_CYAN$C_BOLD" "$*" "$C_RESET" >&2; }
 sg_dim() { printf '%s    %s%s\n' "$C_DIM" "$*" "$C_RESET" >&2; }
 # sg_ok / sg_bad / sg_note — indented "  ✓ ..." / "  ✗ ..." / "  ! ..." status
@@ -87,7 +89,7 @@ _SG_SPIN_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 _SG_SPIN_I=0
 sg_spin_frame() {
   [ "$SG_ANIMATE" = "1" ] || return 0
-  printf '\r%s[sg-migrate]%s %s%s%s %s\033[K' "$C_CYAN" "$C_RESET" "$C_CYAN" "${_SG_SPIN_FRAMES[_SG_SPIN_I % 10]}" "$C_RESET" "$1" >&2
+  printf '\r%s%s%s %s\033[K' "$C_CYAN" "${_SG_SPIN_FRAMES[_SG_SPIN_I % 10]}" "$C_RESET" "$1" >&2
   _SG_SPIN_I=$((_SG_SPIN_I + 1))
 }
 sg_spin_clear() {
