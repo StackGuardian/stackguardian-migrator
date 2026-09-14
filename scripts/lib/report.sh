@@ -162,19 +162,35 @@ show_import_plan() {
   rw=8
   case "$all_rows" in *$'\t'preset$'\t'*) rw="$(sg_maxlen 8 "preset (${SG_PRESET_RUNNER_SHORT:-})")" ;; esac
   printf "\n  %s%-${wn}s  %-${gn}s  %-7s %-28s %-${rw}s %-8s %-5s %s%s\n" "$C_BOLD" "WORKFLOW" "GROUP" "ACTION" "TERRAFORM" "RUNNER" "TRIGGERS" "VARS" "SECRETS" "$C_RESET" >&2
+  # The legend below only explains what the table actually shows.
+  local has_create=0 has_update=0 has_skip=0 has_fallback=0 has_preset=0 has_secrets=0 legend=""
   while IFS=$'\t' read -r name grp action tfv runner trig vars secrets _; do
     [ -n "$name" ] || continue
-    if [ "$tfv" = "preset" ]; then tfv="preset${SG_PRESET_TFV:+ ($SG_PRESET_TFV)}"
-    elif tf_version_above_ceiling "$tfv"; then tfv="${tfv#TERRAFORM-} -> ${SG_TF_FALLBACK_SHORT:-${SG_DEFAULT_TF_VERSION#TERRAFORM-}} (fallback)"
+    if [ "$tfv" = "preset" ]; then tfv="preset${SG_PRESET_TFV:+ ($SG_PRESET_TFV)}"; has_preset=1
+    elif tf_version_above_ceiling "$tfv"; then tfv="${tfv#TERRAFORM-} -> ${SG_TF_FALLBACK_SHORT:-${SG_DEFAULT_TF_VERSION#TERRAFORM-}} (fallback)"; has_fallback=1
     else tfv="${tfv#TERRAFORM-}"; fi
-    [ "$runner" = "preset" ] && runner="preset${SG_PRESET_RUNNER_SHORT:+ ($SG_PRESET_RUNNER_SHORT)}"
-    [ "$secrets" = "0" ] && secrets="-"
-    case "$action" in create) action="${C_GREEN}create ${C_RESET}" ;; update) action="${C_YELLOW}update ${C_RESET}" ;; skip) action="${C_DIM}skip   ${C_RESET}" ;; esac
+    [ "$runner" = "preset" ] && { runner="preset${SG_PRESET_RUNNER_SHORT:+ ($SG_PRESET_RUNNER_SHORT)}"; has_preset=1; }
+    if [ "$secrets" = "0" ]; then secrets="-"; else has_secrets=1; fi
+    case "$action" in
+    create) action="${C_GREEN}create ${C_RESET}"; has_create=1 ;;
+    update) action="${C_YELLOW}update ${C_RESET}"; has_update=1 ;;
+    skip) action="${C_DIM}skip   ${C_RESET}"; has_skip=1 ;;
+    esac
     printf "  %-${wn}s  %-${gn}s  %s %-28s %-${rw}s %-8s %-5s %s\n" "$name" "$grp" "$action" "$tfv" "$runner" "$trig" "$vars" "$secrets" >&2
   done <<<"$all_rows"
   echo >&2
-  sg_dim "ACTION create = new workflow; update = exists in the group, PATCHed with the current payload; skip = file already imported with identical content (--fresh re-imports)"
-  sg_dim "TERRAFORM '-> fallback' = pinned above SG's managed ceiling (1.5.7, last FOSS release); 'preset' = left to the org's execution preset at import; SECRETS = sensitive vars recreated as placeholder secrets"
+  if [ "$has_update" -eq 1 ] || [ "$has_skip" -eq 1 ]; then
+    [ "$has_create" -eq 1 ] && legend="create = new workflow"
+    [ "$has_update" -eq 1 ] && legend="$legend${legend:+; }update = exists in the group, PATCHed with the current payload"
+    [ "$has_skip" -eq 1 ] && legend="$legend${legend:+; }skip = file already imported with identical content (--fresh re-imports)"
+    sg_dim "ACTION $legend"
+  fi
+  legend=""
+  [ "$has_fallback" -eq 1 ] && legend="TERRAFORM '-> fallback' = pinned above SG's managed ceiling (1.5.7, last FOSS release)"
+  [ "$has_preset" -eq 1 ] && legend="$legend${legend:+; }'preset' = left to the org's execution preset at import"
+  [ "$has_secrets" -eq 1 ] && legend="$legend${legend:+; }SECRETS = sensitive vars recreated as placeholder secrets"
+  [ -n "$legend" ] && sg_dim "$legend"
+  return 0
 }
 
 # write_run_result <outcome> — export/run-result.json and run-summary.md: what
