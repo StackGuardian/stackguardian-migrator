@@ -744,12 +744,16 @@ cmd_validate() {
   fi
 }
 
-# sgcli_bulk <group> <file> <out> — run the bulk create, teeing output to <out>.
-# sg-cli exits 0 even when individual workflows fail, so callers must inspect
-# the output ("Failed to create <name>: ..." lines).
+# sgcli_bulk <group> <file> <out> — run the bulk create, output to <out> (and
+# to the terminal with -v; by default import_bulk renders one line per workflow
+# from it instead). sg-cli exits 0 even when individual workflows fail, so
+# callers must inspect the output ("Failed to create <name>: ..." lines).
 sgcli_bulk() {
-  "$SGCLI_BIN" workflow create --bulk --workflow-group "$1" --org "$ORG" "$2" 2>&1 | tee "$3"
-  return "${PIPESTATUS[0]}"
+  if [ "$VERBOSE" -eq 1 ]; then
+    "$SGCLI_BIN" workflow create --bulk --workflow-group "$1" --org "$ORG" "$2" 2>&1 | tee "$3"
+    return "${PIPESTATUS[0]}"
+  fi
+  "$SGCLI_BIN" workflow create --bulk --workflow-group "$1" --org "$ORG" "$2" >"$3" 2>&1
 }
 
 # state_path_of <file> <wf> — the payload entry's TfStateFilePath ("" if none).
@@ -757,29 +761,61 @@ state_path_of() { "$JQ_BIN" -r --arg n "$2" '.[] | select(.ResourceName == $n) |
 
 # upload_state <group> <wf> <file> <out> — upload the workflow's state file
 # ourselves and append a "[state] uploaded|failed|none <wf>[: why]" marker to
-# <out> for do_import. Returns 1 only when the workflow has a state file that
-# did not land.
+# <out> for do_import. Prints nothing: US_RESULT (uploaded|none|failed) and
+# US_WHY are left for wf_line. Returns 1 only when the workflow has a state
+# file that did not land.
+US_RESULT=""
+US_WHY=""
 upload_state() {
   local grp="$1" name="$2" file="$3" out="$4" path why
+  US_WHY=""
   path="$(state_path_of "$file" "$name")"
   if [ -z "$path" ]; then
+    US_RESULT=none
     printf '[state] none %s\n' "$name" >>"$out"
     return 0
   fi
   if [ ! -f "$path" ]; then
-    sg_warn "  $name: state file missing: $(sg_rel "$path")"
+    US_RESULT=failed
+    US_WHY="state file missing: $(sg_rel "$path")"
     printf '[state] failed %s: state file missing (%s)\n' "$name" "$path" >>"$out"
     return 1
   fi
   if why="$(sg_upload_tfstate "$grp" "$name" "$path")"; then
-    sg_log "  $name: state file uploaded"
+    US_RESULT=uploaded
     printf '[state] uploaded %s\n' "$name" >>"$out"
     return 0
   fi
-  sg_warn "  $name: state file upload failed — $why"
+  US_RESULT=failed
+  US_WHY="$why"
   printf '[state] failed %s: %s\n' "$name" "$why" >>"$out"
   return 1
 }
+
+# wf_line <group> <wf> <created|updated> [uploaded|none|failed [why]] — the one
+# status line a workflow gets in the import output ("✓ grp/wf created, state
+# uploaded"); the state part defaults to upload_state's result.
+wf_line() {
+  local grp="$1" name="$2" verb="$3" st="${4:-$US_RESULT}" why="${5:-$US_WHY}"
+  case "$st" in
+  uploaded) sg_ok "$grp/$name $verb, state uploaded" ;;
+  none) sg_ok "$grp/$name $verb" ;;
+  *) sg_note "$grp/$name $verb, state upload failed${why:+ — $why}" ;;
+  esac
+}
+
+# wf_failed <group> <wf> <created|updated> <Failed to ... line> — the ✗ line for
+# a rejected workflow, with the API body (the raw line goes to <out> for do_import).
+wf_failed() {
+  local body
+  body="${4#*Failed to * "$2": }"
+  sg_bad "$1/$2 not $3 — $body"
+}
+
+# Regex for the API's rejection of a Terraform version above SG's managed
+# ceiling. SG bundles managed runtimes only up to the last MPL-licensed (FOSS)
+# Terraform release; newer versions are BSL and are not shipped.
+TF_CEILING_RE='Failed to create ([^:]+): 400: .*above the highest managed version \(([0-9.]+)\)'
 
 # import_bulk <group> <file> <out> — import one payload file: sg-cli for the
 # workflows that have Terraform variables, a direct API POST for the ones
@@ -803,7 +839,7 @@ upload_state() {
 # not be made.
 import_bulk() {
   local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err line cur="" cli_out pat known upd_names create_file
-  local -a redo=() exists=() updated=()
+  local -a redo=() exists=() updated=() seen=() st_ok=() st_none=() failed_lines=()
   : >"$out"
 
   # Workflows that already exist in the group (the plan's "update" rows) are
@@ -815,17 +851,19 @@ import_bulk() {
   printf '%s' "$known" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || known='[]'
   upd_names="$("$JQ_BIN" -c --argjson ex "$known" '[.[].ResourceName | select(. as $n | $ex | index($n) != null)]' "$file")"
   if [ "$("$JQ_BIN" 'length' <<<"$upd_names")" -gt 0 ]; then
-    sg_log "$("$JQ_BIN" 'length' <<<"$upd_names") workflow(s) already exist in $grp — updating them"
+    [ "$VERBOSE" -eq 1 ] && sg_log "$("$JQ_BIN" 'length' <<<"$upd_names") workflow(s) already exist in $grp — updating them"
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       entry="$("$JQ_BIN" -c --arg n "$name" 'first(.[] | select(.ResourceName == $n))' "$file")"
       if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_update_workflow "$grp" "$entry" 2>/dev/null)"; then
-        sg_log "  $name: updated"
         printf '[updated] %s\n' "$name" >>"$out"
         upload_state "$grp" "$name" "$file" "$out" || true
+        wf_line "$grp" "$name" updated
       else
         # Same shape as sg-cli's failure line (parsed by do_import).
-        printf 'Failed to update %s: %s\n' "$name" "$(tail -n1 <<<"$err")" | tee -a "$out"
+        line="Failed to update $name: $(tail -n1 <<<"$err")"
+        printf '%s\n' "$line" >>"$out"
+        wf_failed "$grp" "$name" updated "$line"
       fi
     done < <("$JQ_BIN" -r '.[]' <<<"$upd_names")
     create_file="$(mktemp)"
@@ -844,32 +882,36 @@ import_bulk() {
     # sg-cli's own state upload, per workflow: trust its success, redo its
     # failures (it sends no x-ms-blob-type, and misreads anything but a
     # literal "HTTP/1.1 200 OK" as a failure). A 409 is an existing workflow.
+    # Everything else it printed is rendered as one line per workflow below.
     while IFS= read -r line; do
       case "$line" in
-      *"Processing workflow: "*) cur="${line##*Processing workflow: }" ;;
+      *"Processing workflow: "*) cur="${line##*Processing workflow: }"; seen+=("$cur") ;;
       *"Failed to create "*)
         cur=""
         name="${line##*Failed to create }"
         name="${name%%:*}"
-        case "$line" in *": 409: "* | *"not unique"*) exists+=("$name") ;; esac
+        case "$line" in
+        *": 409: "* | *"not unique"*) exists+=("$name") ;;
+        *) failed_lines+=("$line") ;;
+        esac
         ;;
-      *"State file uploaded successfully"*) [ -n "$cur" ] && printf '[state] uploaded %s\n' "$cur" >>"$out" ;;
+      *"State file uploaded successfully"*) [ -n "$cur" ] && { printf '[state] uploaded %s\n' "$cur" >>"$out"; st_ok+=("$cur"); } ;;
       *"Failed to upload state file for "*) name="${line##*Failed to upload state file for }"; redo+=("${name%%:*}") ;;
       *"cannot access state file"*) [ -n "$cur" ] && redo+=("$cur") ;;
-      *"TfStateFilePath not provided for "*) name="${line##*TfStateFilePath not provided for }"; printf '[state] none %s\n' "${name%%:*}" >>"$out" ;;
+      *"TfStateFilePath not provided for "*) name="${line##*TfStateFilePath not provided for }"; printf '[state] none %s\n' "${name%%:*}" >>"$out"; st_none+=("${name%%:*}") ;;
       esac
     done <"$cli_out"
     if [ "${#exists[@]}" -gt 0 ]; then
-      sg_log "${#exists[@]} workflow(s) already exist — updating them via the API (sg-cli's update path does not trigger on the 409)"
+      [ "$VERBOSE" -eq 1 ] && sg_log "${#exists[@]} workflow(s) already exist — updating them via the API (sg-cli's update path does not trigger on the 409)"
       for name in "${exists[@]}"; do
         entry="$("$JQ_BIN" -c --arg n "$name" 'first(.[] | select(.ResourceName == $n))' "$file")"
         if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_update_workflow "$grp" "$entry" 2>/dev/null)"; then
-          sg_log "  $name: updated"
           updated+=("$name")
-          redo+=("$name")
           printf '[updated] %s\n' "$name" >>"$out"
+          upload_state "$grp" "$name" "$file" "$out" || true
+          wf_line "$grp" "$name" updated
         else
-          sg_warn "  $name: update failed — $(tail -n1 <<<"$err")"
+          sg_bad "$grp/$name not updated — $(tail -n1 <<<"$err")"
         fi
       done
     fi
@@ -883,10 +925,31 @@ import_bulk() {
       cat "$cli_out" >>"$out"
     fi
     rm -f "$cli_out"
-    if [ "${#redo[@]}" -gt 0 ]; then
-      sg_log "uploading the state of ${#redo[@]} workflow(s) directly (sg-cli reported the upload failed, or did not attempt it)"
-      for name in "${redo[@]}"; do upload_state "$grp" "$name" "$file" "$out" || true; done
-    fi
+    # The created workflows, one line each: sg-cli's upload result, or our own
+    # upload when it failed or was not attempted.
+    for name in ${seen[@]+"${seen[@]}"}; do
+      case " ${exists[*]+"${exists[*]}"} " in *" $name "*) continue ;; esac
+      grep -q "Failed to create $name:" "$out" && continue # sg-cli prefixes its lines with "  ✗   "
+      if [[ " ${redo[*]+"${redo[*]}"} " == *" $name "* ]]; then
+        [ "$VERBOSE" -eq 1 ] && sg_log "uploading the state of $name directly (sg-cli reported the upload failed, or did not attempt it)"
+        upload_state "$grp" "$name" "$file" "$out" || true
+        wf_line "$grp" "$name" created
+      elif [[ " ${st_ok[*]+"${st_ok[*]}"} " == *" $name "* ]]; then
+        wf_line "$grp" "$name" created uploaded
+      elif [[ " ${st_none[*]+"${st_none[*]}"} " == *" $name "* ]]; then
+        wf_line "$grp" "$name" created none
+      else
+        upload_state "$grp" "$name" "$file" "$out" || true
+        wf_line "$grp" "$name" created
+      fi
+    done
+    for line in ${failed_lines[@]+"${failed_lines[@]}"}; do
+      # A version above the managed ceiling is retried by do_import with the
+      # fallback version; its ✗ would only be noise here.
+      [[ "$line" =~ $TF_CEILING_RE ]] && continue
+      name="${line##*Failed to create }"
+      wf_failed "$grp" "${name%%:*}" created "$line"
+    done
   fi
   [ "$with_vars" != "$create_file" ] && rm -f "$with_vars"
   if [ "$n_direct" -eq 0 ]; then
@@ -894,30 +957,28 @@ import_bulk() {
     return "$rc"
   fi
 
-  sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
+  [ "$VERBOSE" -eq 1 ] && sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
   while IFS= read -r entry; do
     name="$("$JQ_BIN" -r '.ResourceName' <<<"$entry")"
     if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_create_workflow "$grp" "$entry" 2>/dev/null)"; then
       if [ "$(tail -n1 <<<"$err")" = "updated" ]; then
-        sg_log "  $name: already existed — updated"
         printf '[updated] %s\n' "$name" >>"$out"
+        upload_state "$grp" "$name" "$file" "$out" || true
+        wf_line "$grp" "$name" updated
       else
-        sg_log "  $name: created"
+        upload_state "$grp" "$name" "$file" "$out" || true
+        wf_line "$grp" "$name" created
       fi
-      upload_state "$grp" "$name" "$file" "$out" || true
     else
       # Same shape as sg-cli's failure line (parsed by do_import).
-      printf 'Failed to create %s: %s\n' "$name" "$(tail -n1 <<<"$err")" | tee -a "$out"
+      line="Failed to create $name: $(tail -n1 <<<"$err")"
+      printf '%s\n' "$line" >>"$out"
+      [[ "$line" =~ $TF_CEILING_RE ]] || wf_failed "$grp" "$name" created "$line"
     fi
   done < <("$JQ_BIN" -c '.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)' "$create_file")
   [ "$create_file" != "$file" ] && rm -f "$create_file"
   return "$rc"
 }
-
-# Regex for the API's rejection of a Terraform version above SG's managed
-# ceiling. SG bundles managed runtimes only up to the last MPL-licensed (FOSS)
-# Terraform release; newer versions are BSL and are not shipped.
-TF_CEILING_RE='Failed to create ([^:]+): 400: .*above the highest managed version \(([0-9.]+)\)'
 
 # do_import <payload> — bulk-import one file. Workflows rejected because their
 # Terraform version is above the SG ceiling are re-imported with
@@ -941,7 +1002,7 @@ do_import() {
       return 0
     fi
   fi
-  sg_log "importing $(basename "$f") -> $grp"
+  [ "$VERBOSE" -eq 1 ] && sg_log "importing $(basename "$f") -> $grp"
   out="$(mktemp)"
   import_bulk "$grp" "$work" "$out" || rc=1
   all_names="$("$JQ_BIN" -c '[.[].ResourceName]' "$work")"
@@ -1047,11 +1108,7 @@ probe_import() {
   do_import "$probe" || true
   res="$EXPORT_DIR/.import-result.$seg.json"
   if [ -f "$res" ] && [ "$("$JQ_BIN" '(.failed | length) + (.state_failed | length)' "$res")" -eq 0 ]; then
-    if [ "$("$JQ_BIN" '.state_uploaded | length' "$res")" -gt 0 ]; then
-      sg_success "probe ok — $name is in SG with its state; importing the rest"
-    else
-      sg_success "probe ok — $name is in SG (no state file to upload); importing the rest"
-    fi
+    sg_success "probe ok — importing the rest"
     rm -rf "$dir" "$res"
     return 0
   fi

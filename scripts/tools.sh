@@ -53,6 +53,11 @@ sg_err() { printf '%s[sg-migrate] ERROR%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*" 
 sg_success() { printf '%s[sg-migrate] ✓%s %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$*" >&2; }
 sg_step() { printf '\n%s==> %s%s\n' "$C_CYAN$C_BOLD" "$*" "$C_RESET" >&2; }
 sg_dim() { printf '%s    %s%s\n' "$C_DIM" "$*" "$C_RESET" >&2; }
+# sg_ok / sg_bad / sg_note — indented "  ✓ ..." / "  ✗ ..." / "  ! ..." status
+# lines (one per item: a workflow imported, a check passed).
+sg_ok() { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
+sg_bad() { printf '  %s✗%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*" >&2; }
+sg_note() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 # sg_row <label> <value> — an aligned "  label   value" line (review/summary tables).
 sg_row() { printf '  %s%-26s%s %s\n' "$C_BOLD" "$1" "$C_RESET" "$2" >&2; }
 
