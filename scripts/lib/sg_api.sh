@@ -259,10 +259,11 @@ sg_preset_version_desc() {
 }
 
 # sg_preset_desc <preset-json> — one line: "Terraform 1.5.7 on shared runners";
-# "none configured (platform defaults: managed Terraform 1.5.7 on shared runners)" for {}.
+# "platform default: managed Terraform 1.5.7 on shared runners" for {} (no
+# nested parentheses, the callers wrap it in their own).
 sg_preset_desc() {
   if [ -z "$1" ] || [ "$1" = "{}" ] || [ "$1" = "null" ]; then
-    printf 'none configured (platform defaults: managed Terraform 1.5.7 on shared runners)'
+    printf 'platform default: managed Terraform 1.5.7 on shared runners'
   else
     printf '%s on %s' "$(sg_preset_version_desc "$1")" "$(sg_preset_runner_desc "$1")"
   fi

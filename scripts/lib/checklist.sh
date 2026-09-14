@@ -191,16 +191,25 @@ write_checklist() {
     "secrets: set the real value of $n_secrets placeholder secret(s) (value CHANGE_ME)${i_unstubbed:+; $n_unstubbed sensitive var(s) have no stub}"
   _cl_status "$n_failed" "imports: none failed" "imports: $n_failed workflow(s) failed — fix and re-run '$PROG import'"
   if [ "$n_preset" -gt 0 ]; then
-    _cl_status "$n_preset" "" "Terraform version: all $n_preset workflow(s) take the execution preset's version (${preset_desc:-see the SG org settings}) instead of their TFC version — run a plan before relying on them"
+    _cl_status "$n_preset" "" "Terraform version: $n_preset workflow(s) run the org's execution preset (${preset_desc:-see the SG org settings}), not their TFC version — run a plan first"
   else
     _cl_status "$((n_fallback + n_unpinned))" "Terraform version: every workflow keeps its TFC version" \
       "Terraform version: $((n_fallback + n_unpinned)) workflow(s) run ${SG_TF_FALLBACK_LABEL:-the fallback version} instead of what TFC used — run a plan before relying on them"
   fi
   _cl_status "$n_trig" "VCS triggers: registered for every workflow that had them" "VCS triggers: $n_trig workflow(s) without triggers — see the checklist, then '$PROG triggers'"
-  _cl_status "$((n_state + n_nonremote))" "state: exported for every selected workspace" \
-    "state: $n_state workspace(s) without exported state${i_nonremote:+, $n_nonremote with non-remote execution} — upload by hand"
-  _cl_status "$n_stfail" "state: uploaded to SG for $n_stok workflow(s)" \
-    "state: $n_stfail workflow(s) are in SG without their state (upload failed) — re-run '$PROG import' or upload by hand"
+  # Export and upload on one line when both are clean, one line each otherwise.
+  if [ "$((n_state + n_nonremote + n_stfail))" -eq 0 ]; then
+    if [ "$n_stok" -gt 0 ]; then
+      _cl_status 0 "state: exported and uploaded to SG for $n_stok workflow(s)"
+    else
+      _cl_status 0 "state: nothing to upload (no state files were exported)"
+    fi
+  else
+    _cl_status "$((n_state + n_nonremote))" "state: exported for every selected workspace" \
+      "state: $n_state workspace(s) without exported state${i_nonremote:+, $n_nonremote with non-remote execution} — upload by hand"
+    _cl_status "$n_stfail" "state: uploaded to SG for $n_stok workflow(s)" \
+      "state: $n_stfail workflow(s) are in SG without their state (upload failed) — re-run '$PROG import' or upload by hand"
+  fi
   [ "$n_renamed" -gt 0 ] && _cl_status "$n_renamed" "" "names: $n_renamed workflow(s) were renamed to valid SG names"
   # shellcheck disable=SC2034
   CHECKLIST_OPEN=$((n_secrets + n_unstubbed + n_failed + n_fallback + n_unpinned + n_preset + n_trig + n_state + n_stfail + n_nonremote))
