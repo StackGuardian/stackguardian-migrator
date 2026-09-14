@@ -99,7 +99,8 @@ sg_spin_clear() {
 
 # sg_run_quiet <running-label> <done-label> <logfile> <cmd...> — run cmd with
 # stdout+stderr captured in logfile, showing "<running-label> (elapsed)" as a
-# live line meanwhile, then a "<done-label> (took Ns)" log line. Returns the
+# live line meanwhile, then a "<done-label> (took Ns)" log line — none when
+# the done label is empty (a step not worth a line by default). Returns the
 # command's exit code; the caller decides what to do with the log.
 sg_run_quiet() {
   local running="$1" done_label="$2" log="$3" pid rc=0 t0=$SECONDS
@@ -116,7 +117,7 @@ sg_run_quiet() {
     sg_log "$running..."
   fi
   wait "$pid" || rc=$?
-  [ "$rc" -eq 0 ] && sg_log "$done_label $C_DIM($(sg_fmt_secs $((SECONDS - t0))))$C_RESET"
+  [ "$rc" -eq 0 ] && [ -n "$done_label" ] && sg_log "$done_label $C_DIM($(sg_fmt_secs $((SECONDS - t0))))$C_RESET"
   return "$rc"
 }
 
