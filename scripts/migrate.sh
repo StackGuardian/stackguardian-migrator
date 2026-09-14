@@ -568,12 +568,17 @@ upload_state() {
 # sg-cli reports as a failed upload is uploaded again by upload_state, and
 # every workflow ends up with a "[state] ..." marker in <out>.
 #
+# Workflows that already exist (re-runs, retries, the probe) come back from
+# sg-cli as "Failed to create <wf>: 409: Workflow ID not unique" — its own
+# update path never triggers (TODO(sg-cli), see sg_update_workflow) — and are
+# updated here via PATCH, state included; their failure line is dropped.
+#
 # Like sg-cli, exits 0 even when individual workflows were rejected —
 # do_import reads those from <out>; non-zero only when a call itself could
 # not be made.
 import_bulk() {
-  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err line cur="" cli_out
-  local -a redo=()
+  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err line cur="" cli_out pat
+  local -a redo=() exists=() updated=()
   : >"$out"
   n_direct="$("$JQ_BIN" '[.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)] | length' "$file")"
   with_vars="$file"
@@ -584,23 +589,49 @@ import_bulk() {
   if [ "$("$JQ_BIN" length "$with_vars")" -gt 0 ]; then
     cli_out="$(mktemp)"
     sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$with_vars" "$cli_out" || rc=1
-    cat "$cli_out" >>"$out"
     # sg-cli's own state upload, per workflow: trust its success, redo its
     # failures (it sends no x-ms-blob-type, and misreads anything but a
-    # literal "HTTP/1.1 200 OK" as a failure).
+    # literal "HTTP/1.1 200 OK" as a failure). A 409 is an existing workflow.
     while IFS= read -r line; do
       case "$line" in
       *"Processing workflow: "*) cur="${line##*Processing workflow: }" ;;
-      *"Failed to create "*) cur="" ;;
+      *"Failed to create "*)
+        cur=""
+        name="${line##*Failed to create }"
+        name="${name%%:*}"
+        case "$line" in *": 409: "* | *"not unique"*) exists+=("$name") ;; esac
+        ;;
       *"State file uploaded successfully"*) [ -n "$cur" ] && printf '[state] uploaded %s\n' "$cur" >>"$out" ;;
       *"Failed to upload state file for "*) name="${line##*Failed to upload state file for }"; redo+=("${name%%:*}") ;;
       *"cannot access state file"*) [ -n "$cur" ] && redo+=("$cur") ;;
       *"TfStateFilePath not provided for "*) name="${line##*TfStateFilePath not provided for }"; printf '[state] none %s\n' "${name%%:*}" >>"$out" ;;
       esac
     done <"$cli_out"
+    if [ "${#exists[@]}" -gt 0 ]; then
+      sg_log "${#exists[@]} workflow(s) already exist — updating them via the API (sg-cli's update path does not trigger on the 409)"
+      for name in "${exists[@]}"; do
+        entry="$("$JQ_BIN" -c --arg n "$name" 'first(.[] | select(.ResourceName == $n))' "$file")"
+        if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_update_workflow "$grp" "$entry" 2>/dev/null)"; then
+          sg_log "  $name: updated"
+          updated+=("$name")
+          redo+=("$name")
+        else
+          sg_warn "  $name: update failed — $(tail -n1 <<<"$err")"
+        fi
+      done
+    fi
+    if [ "${#updated[@]}" -gt 0 ]; then
+      # Drop the create-failure line of every workflow that was updated instead.
+      pat="$(mktemp)"
+      for name in "${updated[@]}"; do printf 'Failed to create %s: ' "$name" >>"$pat"; echo >>"$pat"; done
+      grep -v -F -f "$pat" "$cli_out" >>"$out" || true
+      rm -f "$pat"
+    else
+      cat "$cli_out" >>"$out"
+    fi
     rm -f "$cli_out"
     if [ "${#redo[@]}" -gt 0 ]; then
-      sg_log "${#redo[@]} state upload(s) reported failed by sg-cli — uploading them directly"
+      sg_log "uploading the state of ${#redo[@]} workflow(s) directly (sg-cli reported the upload failed, or did not attempt it)"
       for name in "${redo[@]}"; do upload_state "$grp" "$name" "$file" "$out" || true; done
     fi
   fi
@@ -611,7 +642,7 @@ import_bulk() {
   while IFS= read -r entry; do
     name="$("$JQ_BIN" -r '.ResourceName' <<<"$entry")"
     if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_create_workflow "$grp" "$entry" 2>/dev/null)"; then
-      sg_log "  $name: created"
+      if [ "$(tail -n1 <<<"$err")" = "updated" ]; then sg_log "  $name: already existed — updated"; else sg_log "  $name: created"; fi
       upload_state "$grp" "$name" "$file" "$out" || true
     else
       # Same shape as sg-cli's failure line (parsed by do_import).
@@ -736,7 +767,7 @@ do_import() {
 # upload to succeed before the rest is imported in parallel. An environment
 # problem (wrong connector kind, a store that rejects the upload, a read-only
 # token) then costs one workflow instead of all of them. The probe workflow is
-# re-imported with its file afterwards (sg-cli updates it in place).
+# re-imported with its file afterwards (updated via PATCH, state included).
 probe_import() {
   local f="$1" seg grp name dir probe res
   seg="$(seg_of "$f")"
@@ -751,9 +782,9 @@ probe_import() {
   res="$EXPORT_DIR/.import-result.$seg.json"
   if [ -f "$res" ] && [ "$("$JQ_BIN" '(.failed | length) + (.state_failed | length)' "$res")" -eq 0 ]; then
     if [ "$("$JQ_BIN" '.state_uploaded | length' "$res")" -gt 0 ]; then
-      sg_success "probe ok — $name created and its state uploaded; importing the rest"
+      sg_success "probe ok — $name is in SG with its state; importing the rest"
     else
-      sg_success "probe ok — $name created (no state file to upload); importing the rest"
+      sg_success "probe ok — $name is in SG (no state file to upload); importing the rest"
     fi
     rm -rf "$dir" "$res"
     return 0
@@ -894,7 +925,7 @@ cmd_import() {
 
   # Resume: skip payload files already imported in full with identical content
   # (a changed payload or a previous failure re-imports the whole file;
-  # sg-cli updates existing workflows in place).
+  # existing workflows are updated via PATCH).
   local -a todo=()
   local skipped=0 import_rc=0
   for f in "${PF[@]}"; do

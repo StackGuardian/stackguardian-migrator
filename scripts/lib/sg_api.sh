@@ -105,25 +105,48 @@ sg_patch_workflow() { sg_api_patch "$(wf_url "$1" "$2")" "$3"; }
 # >= v1.5.7 (IacInputData.Data became a pointer so "data": {} is sent) or POST
 # the raw entry. Drop this block and import_bulk's split once a release has it.
 
-# sg_create_workflow <group> <entry-json> — POST one payload entry (PATCH when
-# the name already exists, as sg-cli does). Silent on success; on failure prints
-# "<http-code>: <body>" so the caller can log a sg-cli-style line. 0/22/1.
-sg_create_workflow() {
-  local grp="$1" entry="$2" jq name body tmp rc=0
-  jq="$(sg_resolve jq sg_ensure_jq)"
-  name="$("$jq" -r '.ResourceName' <<<"$entry")"
-  # CLIConfiguration is sg-cli's own block; VCSTriggers is applied in the
-  # trigger pass (the create API does not take it).
-  body="$("$jq" -c 'del(.CLIConfiguration, .VCSTriggers)' <<<"$entry")"
+# _sg_wf_body <entry-json> — a payload entry as the workflow API takes it:
+# CLIConfiguration is sg-cli's own block; VCSTriggers is applied in the
+# trigger pass (the create API does not take it).
+_sg_wf_body() { "$(sg_resolve jq sg_ensure_jq)" -c 'del(.CLIConfiguration, .VCSTriggers)' <<<"$1"; }
+
+# _sg_wf_call <method> <url> <body> — request; silent on success, on failure
+# prints "<http-code>: <body>" (one line) so the caller can log a sg-cli-style
+# line. 0/22/1.
+_sg_wf_call() {
+  local tmp rc=0
   tmp="$(mktemp)"
   # Response into a file, not $(...): SG_HTTP_CODE must survive into this shell.
-  sg_api_raw POST "$(sg_org_url)/wfgrps/$grp/wfs/" "$body" >"$tmp" || rc=$?
-  if [ "$rc" -eq 22 ] && grep -q "Workflow name not unique" "$tmp"; then
-    rc=0
-    sg_api_raw PATCH "$(wf_url "$grp" "$name")" "$body" >"$tmp" || rc=$?
-  fi
+  sg_api_raw "$1" "$2" "$3" >"$tmp" || rc=$?
   [ "$rc" -eq 0 ] || printf '%s: %s\n' "$SG_HTTP_CODE" "$(tr -d '\n' <"$tmp")"
   rm -f "$tmp"
+  return "$rc"
+}
+
+# sg_update_workflow <group> <entry-json> — PATCH an existing workflow with the
+# payload entry. Output/exit as _sg_wf_call.
+# TODO(sg-cli): sg-cli only switches to its update path on the message
+# "Workflow name not unique", but the API answers 409 "Workflow ID not unique",
+# so re-importing an existing workflow fails inside sg-cli; import_bulk
+# catches that 409 and updates through here. Remove once sg-cli handles it.
+sg_update_workflow() {
+  local name
+  name="$("$(sg_resolve jq sg_ensure_jq)" -r '.ResourceName' <<<"$2")"
+  _sg_wf_call PATCH "$(wf_url "$1" "$name")" "$(_sg_wf_body "$2")"
+}
+
+# sg_create_workflow <group> <entry-json> — POST one payload entry; when the
+# workflow already exists (409 / "not unique") it is updated instead, as
+# sg-cli intends to, and "updated" is printed. Otherwise output/exit as
+# _sg_wf_call (callers run this in a subshell, so results travel via stdout).
+sg_create_workflow() {
+  local grp="$1" entry="$2" err rc=0
+  err="$(_sg_wf_call POST "$(sg_org_url)/wfgrps/$grp/wfs/" "$(_sg_wf_body "$entry")")" || rc=$?
+  if [ "$rc" -eq 22 ] && { [ "$SG_HTTP_CODE" = "409" ] || [[ "$err" == *"not unique"* ]]; }; then
+    sg_update_workflow "$grp" "$entry" && echo updated
+    return
+  fi
+  [ "$rc" -eq 0 ] || printf '%s\n' "$err"
   return "$rc"
 }
 
