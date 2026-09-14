@@ -45,6 +45,36 @@ variable "ignoreVarPatterns" {
   type        = list(string)
 }
 
+variable "stripCloudAuthVars" {
+  default     = true
+  description = "Strip the cloud credential env variables (AWS_ACCESS_KEY_ID, ARM_CLIENT_SECRET, GOOGLE_CREDENTIALS, ...) that the workflow's StackGuardian cloud connector replaces. Which family is stripped follows each workflow's effective DeploymentPlatformConfig[0].kind (AWS_* -> AWS, AZURE_* -> AZURE, GCP_* -> GCP). Env variables only; terraform input variables are never touched. Stripped variables are listed in migration-summary.md (strippedCloudAuthVars) and a sensitive one is stripped as well, so no placeholder secret is created for it."
+  type        = bool
+}
+
+variable "cloudAuthVarPatterns" {
+  description = "Regexes (per cloud family AWS/AZURE/GCP, matched against the env variable name) stripped by stripCloudAuthVars. Setting this replaces the whole map, so keep the families you do not change. Also read by scripts/enrich_variable_sets.sh for variable-set variables."
+  type        = map(list(string))
+  default = {
+    AWS = [
+      "^AWS_ACCESS_KEY_ID$", "^AWS_SECRET_ACCESS_KEY$", "^AWS_SESSION_TOKEN$",
+      "^AWS_PROFILE$", "^AWS_ROLE_ARN$", "^AWS_WEB_IDENTITY_TOKEN_FILE$",
+      "^AWS_SHARED_CREDENTIALS_FILE$", "^AWS_CONFIG_FILE$",
+    ]
+    AZURE = [
+      "^ARM_CLIENT_ID$", "^ARM_CLIENT_SECRET$", "^ARM_TENANT_ID$", "^ARM_SUBSCRIPTION_ID$",
+      "^ARM_USE_OIDC$", "^ARM_OIDC_", "^ARM_CLIENT_CERTIFICATE", "^ARM_USE_MSI$", "^ARM_MSI_ENDPOINT$",
+    ]
+    GCP = [
+      "^GOOGLE_CREDENTIALS$", "^GOOGLE_APPLICATION_CREDENTIALS$", "^GOOGLE_OAUTH_ACCESS_TOKEN$",
+      "^GOOGLE_IMPERSONATE_SERVICE_ACCOUNT$", "^CLOUDSDK_AUTH_",
+    ]
+  }
+  validation {
+    condition     = alltrue([for k in keys(var.cloudAuthVarPatterns) : contains(["AWS", "AZURE", "GCP"], k)])
+    error_message = "cloudAuthVarPatterns keys must be AWS, AZURE or GCP (the prefix of the DeploymentPlatformConfig kind)."
+  }
+}
+
 variable "SGDefaultWfApprovers" {
   default     = []
   description = "Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true"

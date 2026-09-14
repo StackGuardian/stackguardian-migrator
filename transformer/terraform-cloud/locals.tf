@@ -29,13 +29,16 @@ locals {
   # projectOverrides keys that name no project of the TFC org (typo guard).
   unknownProjectOverrides = sort([for k in keys(var.projectOverrides) : k if !contains(values(local.projectNames), k)])
 
-  # Effective cloud connector per workflow. Picked via a tuple, not a
-  # conditional: an AWS and an Azure DeploymentPlatformConfig have different
-  # config shapes.
+  # Effective cloud connector per workflow, and the credential env variables it
+  # makes redundant: the family (AWS/AZURE/GCP) is the prefix of the connector
+  # kind, e.g. AZURE_OIDC -> AZURE. Picked via a tuple, not a conditional: an
+  # AWS and an Azure DeploymentPlatformConfig have different config shapes.
   deploymentPlatformConfig = {
     for name in local.workflowNames :
     name => try([for c in [local.effective[name].DeploymentPlatformConfig, var.SGDefaultDeploymentPlatformConfig] : c if c != null][0], var.SGDefaultDeploymentPlatformConfig)
   }
+  cloudPrefix       = { for name in local.workflowNames : name => try(split("_", local.deploymentPlatformConfig[name][0].kind)[0], null) }
+  cloudAuthPatterns = { for name in local.workflowNames : name => var.stripCloudAuthVars ? try(var.cloudAuthVarPatterns[local.cloudPrefix[name]], []) : [] }
 
   # SG workflow-name (ResourceName) sanitization. Per the SG OpenAPI spec,
   # ResourceName must be 1-100 chars; SG's name convention is ^[-a-zA-Z0-9_]+$.
@@ -62,13 +65,26 @@ locals {
     if anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])]
   }
 
+  # Cloud credential env variables the workflow's SG connector replaces
+  # (stripCloudAuthVars). Stripped whether sensitive or not: a sensitive one
+  # must not become a placeholder secret that fights the connector either.
+  strippedCloudAuthVars = {
+    for name, id in data.tfe_workspace_ids.data.ids :
+    name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
+      if v.category == "env"
+      && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])
+    && anytrue([for p in local.cloudAuthPatterns[name] : can(regex(p, v.name))])]
+  }
+
   # TFC never returns values for sensitive variables, so they cannot be
   # migrated. Record them per workspace so the summary can flag them
   # (stripped variables excluded — nobody needs a secret stub for those).
   sensitiveVars = {
     for name, id in data.tfe_workspace_ids.data.ids :
     name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
-    if v.sensitive && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])]
+      if v.sensitive
+      && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])
+    && !(v.category == "env" && anytrue([for p in local.cloudAuthPatterns[name] : can(regex(p, v.name))]))]
   }
 
   # Workspaces whose terraform_version is not a pinned semver (e.g. "latest" or
@@ -142,7 +158,9 @@ locals {
       EnvironmentVariables = concat(
         [for v in data.tfe_variables.data[wsId].variables :
           { "config" : { "textValue" : v.value, "varName" : v.name }, "kind" : "PLAIN_TEXT" }
-        if v.category == "env" && v.sensitive == false && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])],
+          if v.category == "env" && v.sensitive == false
+          && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])
+        && !anytrue([for p in local.cloudAuthPatterns[wsName] : can(regex(p, v.name))])],
         local.effective[wsName].extraEnvironmentVariables != null ? local.effective[wsName].extraEnvironmentVariables : []
       )
 
@@ -284,6 +302,11 @@ locals {
     skippedSensitiveVars    = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
     strippedVars            = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
     ignoreVarPatterns       = var.ignoreVarPatterns
+    # Cloud credential env vars replaced by each workflow's connector.
+    stripCloudAuthVars    = var.stripCloudAuthVars
+    cloudAuthVarPatterns  = var.cloudAuthVarPatterns
+    workspaceCloudKinds   = { for name in local.workflowNames : name => try(local.deploymentPlatformConfig[name][0].kind, null) }
+    strippedCloudAuthVars = { for name, vars in local.strippedCloudAuthVars : name => vars if length(vars) > 0 }
     # Version policy, so the later phases can explain what each workflow runs.
     terraformVersionSource    = var.SGTerraformVersionSource
     terraformVersionDefault   = var.SGDefaultTerraformVersion # null = the execution preset decides

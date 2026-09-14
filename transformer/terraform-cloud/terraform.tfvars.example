@@ -20,6 +20,19 @@ exportPath = "export"
 # name), e.g. TFC_WORKSPACE_NAME or TFC_AWS_RUN_ROLE_ARN. [] keeps everything.
 ignoreVarPatterns = ["^TFC_", "^TFE_"]
 
+# Cloud credential env variables (AWS_ACCESS_KEY_ID, ARM_CLIENT_SECRET,
+# GOOGLE_CREDENTIALS, ...) are replaced by the workflow's StackGuardian cloud
+# connector and are not migrated; which family is stripped follows each
+# workflow's DeploymentPlatformConfig kind. Set false to keep them.
+stripCloudAuthVars = true
+# The patterns per family (AWS / AZURE / GCP). Setting this replaces the whole
+# map; the defaults are listed in variables.tf.
+# cloudAuthVarPatterns = {
+#   AWS   = ["^AWS_ACCESS_KEY_ID$", "^AWS_SECRET_ACCESS_KEY$", "^AWS_SESSION_TOKEN$"]
+#   AZURE = ["^ARM_CLIENT_ID$", "^ARM_CLIENT_SECRET$", "^ARM_TENANT_ID$", "^ARM_SUBSCRIPTION_ID$"]
+#   GCP   = ["^GOOGLE_CREDENTIALS$", "^GOOGLE_APPLICATION_CREDENTIALS$"]
+# }
+
 # Add emails of the users who should approve the terraform plan, since approvalPreApply is set to true
 SGDefaultWfApprovers = []
 

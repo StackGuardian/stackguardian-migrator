@@ -8,7 +8,7 @@
   },
   "DeploymentPlatformConfig": [
     {
-      "kind": "AWS_RBAC", // one of AWS_STATIC, AWS_RBAC, AWS_OIDC, AZURE_STATIC, AZURE_OIDC, AZURE_MANAGED_ID_OIDC, GCP_STATIC, GCP_OIDC
+      "kind": "AWS_RBAC", // one of AWS_STATIC, AWS_RBAC, AWS_OIDC, AZURE_STATIC, AZURE_OIDC, AZURE_MANAGED_ID_OIDC, GCP_STATIC, GCP_OIDC; its prefix decides which credential env vars are stripped (stripCloudAuthVars)
       "config": {
         "integrationId": "/integrations/aws-rbac", // value corresponds to /integrations/<your-integration-from-stackguardian>
         "profileName": "default" // AWS only: the profile name for AWS_RBAC

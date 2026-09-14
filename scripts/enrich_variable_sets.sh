@@ -112,18 +112,35 @@ sg_log "resolving $set_count variable set(s) across workspaces:"
 IGNORE_JSON="$(tfvars_get_json .ignoreVarPatterns)"
 [ "$IGNORE_JSON" = "null" ] && IGNORE_JSON='["^TFC_","^TFE_"]'
 
+# Cloud credential env vars are stripped per workflow like the transformer does:
+# the payload's DeploymentPlatformConfig[0].kind gives the family (AWS/AZURE/GCP),
+# the patterns come from terraform.tfvars. Keep the defaults in sync with
+# variables.tf (cloudAuthVarPatterns). jq (Oniguruma) and Terraform (RE2) agree
+# on the anchored/prefix patterns used here.
+CLOUD_AUTH_DEFAULTS='{"AWS":["^AWS_ACCESS_KEY_ID$","^AWS_SECRET_ACCESS_KEY$","^AWS_SESSION_TOKEN$","^AWS_PROFILE$","^AWS_ROLE_ARN$","^AWS_WEB_IDENTITY_TOKEN_FILE$","^AWS_SHARED_CREDENTIALS_FILE$","^AWS_CONFIG_FILE$"],"AZURE":["^ARM_CLIENT_ID$","^ARM_CLIENT_SECRET$","^ARM_TENANT_ID$","^ARM_SUBSCRIPTION_ID$","^ARM_USE_OIDC$","^ARM_OIDC_","^ARM_CLIENT_CERTIFICATE","^ARM_USE_MSI$","^ARM_MSI_ENDPOINT$"],"GCP":["^GOOGLE_CREDENTIALS$","^GOOGLE_APPLICATION_CREDENTIALS$","^GOOGLE_OAUTH_ACCESS_TOKEN$","^GOOGLE_IMPERSONATE_SERVICE_ACCOUNT$","^CLOUDSDK_AUTH_"]}'
+CLOUD_JSON="$(tfvars_get_json .cloudAuthVarPatterns)"
+[ "$CLOUD_JSON" = "null" ] && CLOUD_JSON="$CLOUD_AUTH_DEFAULTS"
+[ "$(tfvars_get .stripCloudAuthVars true)" != "false" ] || CLOUD_JSON='{}'
+
+# workspace name -> cloud family, from the payloads (for the reports below).
+"$JQ_BIN" -s '[.[][] | {key: ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")),
+                         value: ((.DeploymentPlatformConfig[0].kind // "") | split("_")[0])}] | from_entries' "$@" >"$WORK/cloud.json"
+
 # Merge the effective set vars into each payload, then report counts.
 for f in "$@"; do
   before_tf="$("$JQ_BIN" '[.[].VCSConfig.iacInputData.data | length] | add // 0' "$f")"
   before_env="$("$JQ_BIN" '[.[].EnvironmentVariables | length] | add // 0' "$f")"
   out="$WORK/merged.json"
-  "$JQ_BIN" --slurpfile eff "$WORK/effective.json" --argjson ignore "$IGNORE_JSON" '
+  "$JQ_BIN" --slurpfile eff "$WORK/effective.json" --argjson ignore "$IGNORE_JSON" --argjson cloud_patterns "$CLOUD_JSON" '
     ($eff[0]) as $E
     | map(
         ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) as $wsName
         | ($E[$wsName] // [] | map(select(.key as $k | [$ignore[] | . as $p | select($k | test($p))] | length == 0))) as $all
+        | ((.DeploymentPlatformConfig[0].kind // "") | split("_")[0]) as $cloud
+        | ($cloud_patterns[$cloud] // []) as $cpats
         | ($all | map(select(.sensitive != true and .category == "terraform"))) as $tf
-        | ($all | map(select(.sensitive != true and .category == "env"))) as $env
+        | ($all | map(select(.sensitive != true and .category == "env"
+              and ((.key as $k | [$cpats[] | . as $p | select($k | test($p))] | length) == 0)))) as $env
         | .VCSConfig.iacInputData.data = (
             reduce $tf[] as $v ((.VCSConfig.iacInputData.data // {});
               ($v.value | (fromjson? // $v.value)) as $val
@@ -147,10 +164,26 @@ for f in "$@"; do
   fi
 done
 
-# Report sensitive set vars (cannot be migrated) and key conflicts.
-"$JQ_BIN" -r '
-  to_entries[] | .key as $ws | .value[]
-  | select(.sensitive == true) | "  - \($ws): \(.category):\(.key) (set \(.set))"
+# Report cloud credential set vars stripped (the connector provides them),
+# then sensitive set vars (cannot be migrated; stripped ones excluded) and key
+# conflicts.
+"$JQ_BIN" -r --slurpfile cloud "$WORK/cloud.json" --argjson pats "$CLOUD_JSON" '
+  ($cloud[0]) as $C
+  | to_entries[] | .key as $ws | ($pats[$C[$ws] // ""] // []) as $cpats
+  | .value[] | select(.category == "env")
+  | select(.key as $k | ([$cpats[] | . as $p | select($k | test($p))] | length) > 0)
+  | "  - \($ws): env:\(.key) (set \(.set))"
+' "$WORK/effective.json" | sort -u >"$WORK/cloudauth.txt"
+if [ -s "$WORK/cloudauth.txt" ]; then
+  sg_log "cloud credential variable-set vars stripped (the workflow's cloud connector provides them):"
+  cat "$WORK/cloudauth.txt" >&2
+fi
+"$JQ_BIN" -r --slurpfile cloud "$WORK/cloud.json" --argjson pats "$CLOUD_JSON" '
+  ($cloud[0]) as $C
+  | to_entries[] | .key as $ws | ($pats[$C[$ws] // ""] // []) as $cpats
+  | .value[] | select(.sensitive == true)
+  | select(.category != "env" or ((.key as $k | [$cpats[] | . as $p | select($k | test($p))] | length) == 0))
+  | "  - \($ws): \(.category):\(.key) (set \(.set))"
 ' "$WORK/effective.json" | sort -u >"$WORK/sensitive.txt"
 if [ -s "$WORK/sensitive.txt" ]; then
   sg_warn "sensitive variable-set vars skipped (recreate as SG secrets):"

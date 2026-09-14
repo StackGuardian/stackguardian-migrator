@@ -31,6 +31,20 @@ Not migrated because they only mean something inside Terraform Cloud (patterns: 
 %{ endfor ~}
 %{ endif ~}
 
+## Stripped cloud credential variables
+Env variables replaced by the workflow's StackGuardian cloud connector (AWS_*/ARM_*/GOOGLE_* credential families, chosen by the connector kind). Set stripCloudAuthVars = false or edit cloudAuthVarPatterns to keep them.
+%{ if !summary.stripCloudAuthVars ~}
+- Disabled (stripCloudAuthVars = false).
+%{ else ~}
+%{ if length(summary.strippedCloudAuthVars) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, vars in summary.strippedCloudAuthVars ~}
+- ${ws} (${summary.workspaceCloudKinds[ws]}): ${join(", ", vars)}
+%{ endfor ~}
+%{ endif ~}
+%{ endif ~}
+
 ## Terraform version
 %{ if summary.terraformVersionSource == "preset" ~}
 No version is set on the migrated workflows (SGTerraformVersionSource = "preset"): StackGuardian applies the organisation's execution preset (Settings -> Runner groups -> Execution presets), or its platform default (managed Terraform 1.5.7) when none is configured. The workspaces ran these versions in TFC:
