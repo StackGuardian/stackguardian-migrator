@@ -95,9 +95,13 @@ _cl_count() {
 }
 
 # _cl_status <count> <ok-text> <attention-text> — one terminal line per section.
+# _cl_status <count> <ok-text> <open-text> — an open section prints its "!"
+# line; a clean one is only collected (CL_CLEAN) and the terminal view ends
+# with one "✓ secrets, imports, ...: nothing left to do" line for all of them.
+CL_CLEAN=""
 _cl_status() {
   if [ "${1:-0}" -gt 0 ]; then printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$3" >&2
-  else printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$2" >&2; fi
+  else CL_CLEAN="$CL_CLEAN${CL_CLEAN:+, }${2%%:*}"; fi
 }
 
 # _cl_block <items> — the markdown list for a section, or "- None."
@@ -112,6 +116,7 @@ write_checklist() {
   local n_secrets n_unstubbed n_failed n_fallback n_unpinned n_preset n_trig n_state n_stfail n_stok n_nonremote n_renamed
   local f seg grp n total=0 gw preset_desc=""
   local -a glines=()
+  CL_CLEAN=""
   st="$(state_read)"
   [ -n "${SG_PRESET_JSON:-}" ] && preset_desc="$(sg_preset_desc "$SG_PRESET_JSON")"
 
@@ -211,6 +216,7 @@ write_checklist() {
       "state: $n_stfail workflow(s) are in SG without their state (upload failed) — re-run '$PROG import' or upload by hand"
   fi
   [ "$n_renamed" -gt 0 ] && _cl_status "$n_renamed" "" "names: $n_renamed workflow(s) were renamed to valid SG names"
+  [ -n "$CL_CLEAN" ] && printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$CL_CLEAN: nothing left to do" >&2
   # shellcheck disable=SC2034
   CHECKLIST_OPEN=$((n_secrets + n_unstubbed + n_failed + n_fallback + n_unpinned + n_preset + n_trig + n_state + n_stfail + n_nonremote))
   sg_dim "full checklist with links: $(sg_rel "$out")"

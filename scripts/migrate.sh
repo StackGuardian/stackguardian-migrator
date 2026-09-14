@@ -300,19 +300,38 @@ payload_sha() {
 # rewrites the payloads, so a payload hash could never match again. convert and
 # validate record the post-run payload hash, so an unchanged export is
 # recognised on the next run.
+# Consecutive skipped phases are reported on one line ("phases 1-4 (apply,
+# enrich, convert, validate) unchanged since ... — skipped"), flushed by
+# skipped_phases_flush before the next phase that runs and before the import.
+SKIPPED_PHASES=""
+SKIPPED_FIRST=0
+SKIPPED_LAST=0
+SKIPPED_AT=""
+skipped_phases_flush() {
+  [ -n "$SKIPPED_PHASES" ] || return 0
+  local range="phase $SKIPPED_FIRST"
+  [ "$SKIPPED_LAST" -gt "$SKIPPED_FIRST" ] && range="phases $SKIPPED_FIRST-$SKIPPED_LAST"
+  if [ "$PHASE_TOTAL" -gt 0 ]; then
+    sg_log "$range/$PHASE_TOTAL (${SKIPPED_PHASES// /, }) unchanged since $SKIPPED_AT — skipped (--fresh to redo)"
+  else
+    sg_log "${SKIPPED_PHASES// /, } unchanged since $SKIPPED_AT — skipped (--fresh to redo)"
+  fi
+  SKIPPED_PHASES=""
+}
 run_phase() {
   local name="$1" sha="$2" fn="$3" at
   if at="$(state_phase_done "$name" "$sha")" && [ -n "$at" ]; then
     at="${at%:*}"
     at="${at/T/ } UTC"
-    if [ "$PHASE_TOTAL" -gt 0 ]; then
-      PHASE_N=$((PHASE_N + 1))
-      sg_log "skipping phase $PHASE_N/$PHASE_TOTAL ($name) — inputs unchanged since $at (--fresh to redo)"
-    else
-      sg_log "skipping $name — inputs unchanged since $at (--fresh to redo)"
-    fi
+    PHASE_N=$((PHASE_N + 1))
+    [ -n "$SKIPPED_PHASES" ] || { SKIPPED_FIRST=$PHASE_N; SKIPPED_AT="$at"; }
+    SKIPPED_LAST=$PHASE_N
+    SKIPPED_PHASES="$SKIPPED_PHASES${SKIPPED_PHASES:+ }$name"
+    # The oldest timestamp is the one that matters when they differ.
+    [[ "$at" < "$SKIPPED_AT" ]] && SKIPPED_AT="$at"
     return 0
   fi
+  skipped_phases_flush
   "$fn" || return $?
   case "$name" in
   apply | enrich) state_mark_phase "$name" "$sha" ;;
@@ -518,13 +537,20 @@ plan_groups() {
       | select(($dups | length) > 0)
       | "workflow name(s) \($dups | join(", ")) appear in more than one project mapped to group \u0027\($g)\u0027 (\([.[].seg] | join(", "))) — a workflow name is unique within a group; give one of the projects its own workflowGroup"')
 
-  fw="$(sg_maxlen 4 "${files[@]}")"
-  gw="$(sg_maxlen 14 "${groups[@]}")"
   printf '%sImport plan%s (org: %s%s%s, %s)\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$ORG" "$C_RESET" "$SG_BASE_URL" >&2
-  printf "  %s%-${fw}s  %-${gw}s  %-9s %s%s\n" "$C_BOLD" "FILE" "WORKFLOW GROUP" "WORKFLOWS" "STATUS" "$C_RESET" >&2
-  for ((i = 0; i < ${#files[@]}; i++)); do
-    printf "  %-${fw}s  %-${gw}s  %-9s %s\n" "${files[i]}" "${groups[i]}" "${counts[i]}" "${statuses[i]}" >&2
-  done
+  # The group table only when it says something the workflow table does not:
+  # a group to create, or a problem. All-reuse plans skip it (the GROUP column
+  # names the groups; the confirmation names the ones to create).
+  local all_reuse=1
+  for plain in "${plains[@]}"; do [ "$plain" = reuse ] || all_reuse=0; done
+  if [ "$all_reuse" -eq 0 ] || [ "${#PLAN_PROBLEMS[@]}" -gt 0 ] || [ "$legacy" -gt 0 ]; then
+    fw="$(sg_maxlen 4 "${files[@]}")"
+    gw="$(sg_maxlen 14 "${groups[@]}")"
+    printf "  %s%-${fw}s  %-${gw}s  %-9s %s%s\n" "$C_BOLD" "FILE" "WORKFLOW GROUP" "WORKFLOWS" "STATUS" "$C_RESET" >&2
+    for ((i = 0; i < ${#files[@]}; i++)); do
+      printf "  %-${fw}s  %-${gw}s  %-9s %s\n" "${files[i]}" "${groups[i]}" "${counts[i]}" "${statuses[i]}" >&2
+    done
+  fi
   if [ "$legacy" -gt 0 ]; then
     sg_warn "$(sg_rel "$MAPPING") overrides the group of $legacy project(s) — this file is deprecated; set projectOverrides.\"<project>\".workflowGroup in $(sg_rel "$TFVARS") instead (project names: workspaceProjects in $(sg_rel "$EXPORT_DIR")/migration-summary.json) and re-run 'apply'"
   fi
@@ -688,7 +714,7 @@ cmd_apply() {
     # Quiet: terraform's init/plan output goes to a log that is shown only on
     # failure; the terminal gets a live progress line per step instead.
     tflog="$(mktemp)"
-    sg_run_quiet "initializing terraform providers" "terraform providers ready" "$tflog" tf_init -no-color || rc=$?
+    sg_run_quiet "initializing terraform providers" "$([ "$VERBOSE" -eq 1 ] && echo "terraform providers ready")" "$tflog" tf_init -no-color || rc=$?
     if [ "$rc" -eq 0 ]; then
       sg_run_quiet "reading workspaces, generating payloads, exporting state" "workspaces read, payloads generated, state exported" "$tflog" \
         tf_apply -no-color ${tfvar_args[@]+"${tfvar_args[@]}"} || rc=$?
@@ -724,6 +750,17 @@ cmd_convert() {
   phase_begin "convert (HCL → JSON)"
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR") (run 'apply' first)."
+  local one=""
+  if [ "${#PF[@]}" -eq 1 ] && [ "$VERBOSE" -ne 1 ]; then
+    # One file: its result line and the ✓ line would say the same — keep the ✓.
+    if one="$(do_convert "${PF[0]}" 2>&1)"; then
+      sg_success "${one#*: } in $(phase_took)"
+      return 0
+    fi
+    printf '%s\n' "$one" >&2
+    sg_err "conversion failed for $(basename "${PF[0]}")"
+    return 1
+  fi
   if run_parallel do_convert "$CONC" "converting ${#PF[@]} payload file(s)" "${PF[@]}"; then
     sg_success "converted ${#PF[@]} payload file(s) in $(phase_took)"
   else
@@ -737,7 +774,7 @@ cmd_validate() {
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR")."
   if "$SCRIPT_DIR/validate_payload.sh" "${PF[@]}"; then
-    sg_success "${#PF[@]} payload file(s) valid against schema/sg-payload.schema.json"
+    sg_success "${#PF[@]} payload file(s) valid"
   else
     sg_err "validation failed — fix the payload(s) above (or the transformer) and re-run '$PROG validate'"
     return 1
@@ -1201,7 +1238,11 @@ cmd_import() {
 
   if [ "$ASSUME_YES" -ne 1 ]; then
     q="Import $PLAN_TOTAL_WF workflow(s) into $ORG"
-    [ "$PLAN_N_CREATE" -gt 0 ] && q="$q and create $PLAN_N_CREATE workflow group(s)"
+    if [ "$PLAN_N_CREATE" -gt 0 ]; then
+      local names_to_create=""
+      for grp in $PLAN_TO_CREATE; do names_to_create="$names_to_create${names_to_create:+, }$grp"; done
+      q="$q, creating workflow group(s) $names_to_create"
+    fi
     sg_interactive || die "no terminal to confirm the import — re-run with -y to import without a prompt"
     if ! sg_confirm "$q?" N; then
       sg_warn "import cancelled — nothing was changed in $ORG"
@@ -1256,14 +1297,15 @@ cmd_import() {
 finish_line() {
   local open="${CHECKLIST_OPEN:-0}" took
   took="$(sg_fmt_secs $((SECONDS - RUN_T0)))"
+  local where
+  where="files: $(sg_rel "$EXPORT_DIR")/post-import-checklist.md, run-result.json, run-summary.md"
   if [ "$1" -ne 0 ]; then
-    sg_err "finished with failures in $took — fix what is reported above and re-run '$PROG import' (only failed or changed files are retried)"
+    sg_err "finished with failures in $took — fix what is reported above and re-run '$PROG import' (only failed or changed files are retried); $where"
   elif [ "$open" -gt 0 ]; then
-    sg_success "migration complete in $took — $open item(s) still need a human, see $(sg_rel "$EXPORT_DIR")/post-import-checklist.md"
+    sg_success "migration complete in $took — $open item(s) still need a human; $where"
   else
-    sg_success "migration complete in $took — nothing left to do by hand"
+    sg_success "migration complete in $took — nothing left to do by hand; $where"
   fi
-  sg_dim "run result: $(sg_rel "$EXPORT_DIR")/run-result.json, run-summary.md (markdown, e.g. for a CI job summary)"
 }
 
 # Single source of truth for shell completion (keep in sync with the parser below
@@ -1578,6 +1620,7 @@ main() {
     if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$apply_sha" cmd_enrich; fi
     run_phase convert "$(payload_sha)" cmd_convert
     run_phase validate "$(payload_sha)" cmd_validate
+    skipped_phases_flush
     RAN_APPLY=1 # the export ran, or its inputs (flags included) were unchanged
     cmd_import
     ;;

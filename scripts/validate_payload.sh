@@ -31,7 +31,7 @@ set +o pipefail
     continue
   fi
   case "$line" in
-  *": pass") printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$(basename "${line%: pass}")" >&2 ;;
+  *": pass") ;; # the orchestrator prints one ✓ line for all files
   *": fail: "*) printf '  %s✗%s %s: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$(basename "${line%%: fail: *}")" "${line#*: fail: }" >&2 ;;
   *": error: "*) printf '  %s✗%s %s: %s\n' "$C_RED$C_BOLD" "$C_RESET" "$(basename "${line%%: error: *}")" "${line#*: error: }" >&2 ;;
   *) printf '      %s\n' "$line" >&2 ;;
