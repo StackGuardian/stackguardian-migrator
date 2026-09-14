@@ -124,12 +124,12 @@ show_import_plan() {
     grp="$(group_for "$seg")"
     existing="$(sg_list_workflows "$grp")"
     printf '%s' "$existing" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || existing='[]'
-    rows="$("$JQ_BIN" -r --argjson ex "$existing" --arg grp "$grp" --argjson ws "$(ws_filter_json)" \
+    rows="$("$JQ_BIN" -r --argjson ex "$existing" --arg grp "$grp" --argjson inc "$(ws_filter_json)" \
       --argjson skip "${PLAN_SKIP_SEGS:-[]}" --arg seg "$seg" \
-      --slurpfile sum "${summary:-/dev/null}" '
+      --slurpfile sum "${summary:-/dev/null}" "$WS_SCOPE_JQ"'
       ($sum[0] // {}) as $S
       | .[]
-      | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null))
+      | select(.ResourceName | ws_selected)
       | ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) as $wsName
       | .ResourceName as $n
       | [ $n, $grp,

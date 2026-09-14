@@ -121,7 +121,8 @@ Options:
   --no-secret-stubs  Do not create placeholder SG secrets for sensitive variables
   --fresh            Ignore the saved run state: redo every phase and re-import everything
   --project SEG      Only handle this TFC project (repeatable; matches sg-payload.<SEG>.json)
-  --workspace NAME   Only handle this workspace (repeatable; apply exports only it)
+  --workspace GLOB   Only handle matching workspaces (repeatable; "team-*", "*" = all;
+                     apply exports only them, later phases select the same ones)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
@@ -263,16 +264,44 @@ payload_files() {
   fi
 }
 
-# ws_filter_json — the --workspace names as a JSON array (empty array = no filter).
-ws_filter_json() {
-  if [ "${#WS_FILTER[@]}" -eq 0 ]; then echo '[]'; else names_json "${WS_FILTER[@]}"; fi
+# --- run scope ----------------------------------------------------------------
+# terraform.tfvars holds the widest scope (workspacenames, tags, ...); the CLI
+# narrows one run, and every phase applies the same selection: the --workspace
+# globs go to terraform for the export and are matched against the payload
+# entries (ResourceName) afterwards, so 'import --workspace "team-*"' picks the
+# workflows 'apply --workspace "team-*"' exported.
+
+# ws_narrowed — exit 0 when --workspace restricts the run ("*" alone does not,
+# so a CI run over everything keeps the unchanged-file skip).
+ws_narrowed() {
+  local p
+  for p in ${WS_FILTER[@]+"${WS_FILTER[@]}"}; do [ "$p" = "*" ] || return 0; done
+  return 1
 }
 
-# ws_selected <name> — exit 0 when no --workspace filter is set or it lists <name>.
-ws_selected() {
-  [ "${#WS_FILTER[@]}" -eq 0 ] && return 0
-  case " ${WS_FILTER[*]} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+# ws_filter_json — the --workspace globs as a JSON array ([] = no filter).
+ws_filter_json() {
+  JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"
+  if ws_narrowed; then names_json "${WS_FILTER[@]}"; else echo '[]'; fi
 }
+
+# ws_selected <name> — exit 0 when <name> is in the run's scope.
+ws_selected() {
+  local p
+  ws_narrowed || return 0
+  for p in "${WS_FILTER[@]}"; do
+    # shellcheck disable=SC2254  # unquoted on purpose: $p is a glob
+    case "$1" in $p) return 0 ;; esac
+  done
+  return 1
+}
+
+# WS_SCOPE_JQ — the same test for jq programs over payload entries. Callers
+# pass --argjson inc "$(ws_filter_json)" and use 'select(.ResourceName | ws_selected)'.
+WS_SCOPE_JQ='
+  def ws_glob($p): "^" + ($p | gsub("(?<c>[.+^$(){}|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$";
+  def ws_selected: . as $n | (($inc | length) == 0 or any($inc[]; . as $p | $n | test(ws_glob($p))));
+'
 
 seg_of() {
   local b
@@ -370,7 +399,7 @@ plan_groups() {
   PLAN_PROBLEMS=()
   for f in "${paths[@]}"; do
     seg="$(seg_of "$f")"
-    names="$("$JQ_BIN" -c --argjson ws "$(ws_filter_json)" '[.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null)) | .ResourceName]' "$f")"
+    names="$("$JQ_BIN" -c --argjson inc "$(ws_filter_json)" "$WS_SCOPE_JQ"'[.[] | select(.ResourceName | ws_selected) | .ResourceName]' "$f")"
     count="$("$JQ_BIN" 'length' <<<"$names")"
     PLAN_TOTAL_WF=$((PLAN_TOTAL_WF + count))
     grp="$(group_for "$seg")"
@@ -425,8 +454,8 @@ plan_groups() {
   while IFS= read -r line; do
     [ -n "$line" ] && PLAN_PROBLEMS+=("$line")
   done < <(for ((i = 0; i < ${#paths[@]}; i++)); do
-    "$JQ_BIN" -c --arg seg "$(seg_of "${paths[i]}")" --arg grp "${groups[i]}" --argjson ws "$(ws_filter_json)" \
-      '{seg: $seg, grp: $grp, names: [.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null)) | .ResourceName]}' "${paths[i]}"
+    "$JQ_BIN" -c --arg seg "$(seg_of "${paths[i]}")" --arg grp "${groups[i]}" --argjson inc "$(ws_filter_json)" \
+      "$WS_SCOPE_JQ"'{seg: $seg, grp: $grp, names: [.[] | select(.ResourceName | ws_selected) | .ResourceName]}' "${paths[i]}"
   done | "$JQ_BIN" -sr '
       group_by(.grp)[] | select(length > 1) | .[0].grp as $g
       | ([.[].names[]] | group_by(.) | map(select(length > 1) | .[0])) as $dups
@@ -575,10 +604,12 @@ cmd_apply() {
   local tflog rc=0
   local -a tfvar_args=()
   TF_PATH="$(dirname "$(sg_resolve jq sg_ensure_jq)"):$PATH"
+  # --workspace replaces the tfvars workspacenames for this run (globs included,
+  # "*" = every workspace); the module applies the tag filters on top.
   if [ "${#WS_FILTER[@]}" -gt 0 ]; then
     JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"
-    tfvar_args=(-var "workspacenames=$(ws_filter_json)")
-    sg_log "limiting apply to workspace(s): ${WS_FILTER[*]}"
+    tfvar_args=(-var "workspacenames=$(names_json "${WS_FILTER[@]}")")
+    sg_log "exporting workspace(s): ${WS_FILTER[*]}"
   fi
 
   if [ "$VERBOSE" -eq 1 ]; then
@@ -796,9 +827,9 @@ do_import() {
   grp="$(group_for "$seg")"
   # With --workspace, import only the selected workflows (a filtered copy).
   work="$f"
-  if [ "${#WS_FILTER[@]}" -gt 0 ]; then
+  if ws_narrowed; then
     work="$(mktemp "$EXPORT_DIR/.subset.$seg.XXXXXX")"
-    "$JQ_BIN" --argjson names "$(ws_filter_json)" 'map(select(.ResourceName as $n | $names | index($n) != null))' "$f" >"$work"
+    "$JQ_BIN" --argjson inc "$(ws_filter_json)" "$WS_SCOPE_JQ"'map(select(.ResourceName | ws_selected))' "$f" >"$work"
     if [ "$("$JQ_BIN" 'length' "$work")" -eq 0 ]; then
       sg_log "$(basename "$f"): no selected workflows — skipped"
       rm -f "$work"
@@ -897,7 +928,7 @@ probe_import() {
   local f="$1" seg grp name dir probe res
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
-  name="$("$JQ_BIN" -r --argjson ws "$(ws_filter_json)" 'first(.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null)) | .ResourceName) // empty' "$f")"
+  name="$("$JQ_BIN" -r --argjson inc "$(ws_filter_json)" "$WS_SCOPE_JQ"'first(.[] | select(.ResourceName | ws_selected) | .ResourceName) // empty' "$f")"
   [ -n "$name" ] || return 0
   dir="$(mktemp -d "$EXPORT_DIR/.probe.XXXXXX")"
   probe="$dir/$(basename "$f")"
@@ -957,6 +988,7 @@ cmd_import() {
   # collisions); problems are shown here and stop the run after the full plan.
   local q grp f seg
   plan_groups "${PF[@]}"
+  [ "$PLAN_TOTAL_WF" -gt 0 ] || die "no workflow in $(sg_rel "$EXPORT_DIR")/ matches the --workspace filter (${WS_FILTER[*]-}) — check the glob, or re-run 'apply' with it"
 
   # Files already imported in full with identical content are skipped (the
   # plan shows their workflows as "skip"); --fresh or a --workspace filter
@@ -965,7 +997,7 @@ cmd_import() {
   local skipped=0 import_rc=0
   for f in "${PF[@]}"; do
     seg="$(seg_of "$f")"
-    if [ "$FRESH" -eq 0 ] && [ "${#WS_FILTER[@]}" -eq 0 ] && state_import_done "$seg" "$(sg_sha_files "$f")"; then
+    if [ "$FRESH" -eq 0 ] && ! ws_narrowed && state_import_done "$seg" "$(sg_sha_files "$f")"; then
       skipped=$((skipped + 1))
       skip_segs+=("$seg")
       continue
@@ -1140,7 +1172,7 @@ _sg_migrate() {
     '--no-secret-stubs[Do not create placeholder SG secrets for sensitive vars]' \\
     '--fresh[Ignore saved run state: redo every phase]' \\
     '*--project[Only this TFC project segment]:segment' \\
-    '*--workspace[Only this workspace]:name' \\
+    '*--workspace[Only matching workspaces (glob)]:glob' \\
     '--all[With clean: also remove config]' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
