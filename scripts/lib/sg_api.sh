@@ -176,7 +176,9 @@ sg_update_workflow() {
 sg_create_workflow() {
   local grp="$1" entry="$2" err rc=0
   err="$(_sg_wf_call POST "$(sg_org_url)/wfgrps/$grp/wfs/" "$(_sg_wf_body "$entry")")" || rc=$?
-  if [ "$rc" -eq 22 ] && { [ "$SG_HTTP_CODE" = "409" ] || [[ "$err" == *"not unique"* ]]; }; then
+  # SG_HTTP_CODE is set inside the $(...) above and lost here (unset under set -u
+  # when no call ran in this shell yet); the "<code>: <body>" text carries it.
+  if [ "$rc" -eq 22 ] && { [[ "$err" == 409:* ]] || [[ "$err" == *"not unique"* ]]; }; then
     sg_update_workflow "$grp" "$entry" && echo updated
     return
   fi
