@@ -12,7 +12,10 @@ show_migration_summary() {
   sg_step "Migration summary"
   sg_row "TFC organisation" "$("$jqb" -r '.organization' "$f")"
   sg_row "Workspaces exported" "$("$jqb" -r '.workspaceCount' "$f")"
-  "$jqb" -r '.projectWorkspaceCounts | to_entries[] | "    tfc-\(.key | ascii_downcase | gsub("[^a-z0-9-]+"; "-")): \(.value) workflow(s)"' "$f" >&2
+  # Per project: the SG workflow group the transformer assigned (projects.*.workflowGroup;
+  # older summaries only have the counts, then the default tfc-<segment> is shown).
+  "$jqb" -r 'if (.projects // null) != null then .projects | to_entries[] | "    \(.key) -> \(.value.workflowGroup): \(.value.workspaceCount) workflow(s)"
+             else .projectWorkspaceCounts | to_entries[] | "    tfc-\(.key | ascii_downcase | gsub("[^a-z0-9-]+"; "-")): \(.value) workflow(s)" end' "$f" >&2
   if [ "$(tfvars_get .exportStateFiles true)" != "false" ]; then
     states=0
     for n in "$EXPORT_DIR"/states/*.tfstate; do [ -f "$n" ] && states=$((states + 1)); done
@@ -41,6 +44,10 @@ show_migration_summary() {
     'to_entries[] | "\(.key): \(.value | join(", "))"' "TFC never exposes their values; they become placeholder SG secrets after import"
   _summary_section "$f" '.strippedVars' "TFC-specific variables stripped" \
     'to_entries[] | "\(.key): \(.value | join(", "))"' "they only mean something inside Terraform Cloud (ignoreVarPatterns)"
+  _summary_section "$f" '.strippedCloudAuthVars // {}' "Cloud credential variables stripped" \
+    'to_entries[] | "\(.key): \(.value | join(", "))"' "the workflow's cloud connector provides them (stripCloudAuthVars)"
+  _summary_section "$f" '.unknownProjectOverrides // []' "projectOverrides key(s) matching no TFC project" \
+    '.[]' "typo? their settings apply to nothing"
   _summary_section "$f" '.terraformVersionFallbacks' "Terraform version not pinned" \
     'to_entries[] | "\(.key): \"\(.value)\""' "$([ -z "$def" ] && echo "left to the execution preset" || echo "the fallback ${def#TERRAFORM-} is used")"
   _summary_section "$f" '.nonRemoteExecutionModes' "Non-remote execution mode" \
@@ -118,6 +125,7 @@ show_import_plan() {
     existing="$(sg_list_workflows "$grp")"
     printf '%s' "$existing" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || existing='[]'
     rows="$("$JQ_BIN" -r --argjson ex "$existing" --arg grp "$grp" --argjson ws "$(ws_filter_json)" \
+      --argjson skip "${PLAN_SKIP_SEGS:-[]}" --arg seg "$seg" \
       --slurpfile sum "${summary:-/dev/null}" '
       ($sum[0] // {}) as $S
       | .[]
@@ -125,7 +133,7 @@ show_import_plan() {
       | ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) as $wsName
       | .ResourceName as $n
       | [ $n, $grp,
-          (if ($ex | index($n)) != null then "update" else "create" end),
+          (if ($skip | index($seg)) != null then "skip" elif ($ex | index($n)) != null then "update" else "create" end),
           (.TerraformConfig.terraformVersion // "preset"),
           ((.RunnerConstraints // null) | if . == null then "preset" elif .type == "private" then "private" else "shared" end),
           (if (.VCSTriggers // null) != null then "yes" else "no" end),
@@ -150,9 +158,10 @@ show_import_plan() {
     else tfv="${tfv#TERRAFORM-}"; fi
     [ "$runner" = "preset" ] && runner="preset${SG_PRESET_RUNNER_SHORT:+ ($SG_PRESET_RUNNER_SHORT)}"
     [ "$secrets" = "0" ] && secrets="-"
-    case "$action" in create) action="${C_GREEN}create ${C_RESET}" ;; update) action="${C_YELLOW}update ${C_RESET}" ;; esac
+    case "$action" in create) action="${C_GREEN}create ${C_RESET}" ;; update) action="${C_YELLOW}update ${C_RESET}" ;; skip) action="${C_DIM}skip   ${C_RESET}" ;; esac
     printf "  %-${wn}s  %-${gn}s  %s %-28s %-${rw}s %-8s %-5s %s\n" "$name" "$grp" "$action" "$tfv" "$runner" "$trig" "$vars" "$secrets" >&2
   done <<<"$all_rows"
   echo >&2
+  sg_dim "ACTION create = new workflow; update = exists in the group, PATCHed with the current payload; skip = file already imported with identical content (--fresh re-imports)"
   sg_dim "TERRAFORM '-> fallback' = pinned above SG's managed ceiling (1.5.7, last FOSS release); 'preset' = left to the org's execution preset at import; SECRETS = sensitive vars recreated as placeholder secrets"
 }

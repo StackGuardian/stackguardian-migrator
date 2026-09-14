@@ -83,14 +83,29 @@ wf_triggers_endpoint() { printf '%swebhooks/vcs_triggers/' "$(wf_url "$1" "$2")"
 # sg_workflow_exists <group> <wf> — exit 0 when the workflow exists.
 sg_workflow_exists() { [ "$(sg_http_code GET "$(wf_url "$1" "$2")")" = "200" ]; }
 
-# sg_list_workflows <group> — ["wf-name", ...] in the group ([] on 404).
-sg_list_workflows() {
-  local body out
-  if body="$(sg_api_get "$(sg_org_url)/wfgrps/$1/wfs/listall/" 2>/dev/null)"; then
-    out="$(printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif (.data.Workflows? | type) == "array" then .data.Workflows elif type == "array" then . else [] end)[] | (.ResourceName // .Id // empty)]' 2>/dev/null)"
-  fi
-  printf '%s' "${out:-[]}"
+# _sg_listall <path-under-org> <jq-item-expr> — every item of a paginated
+# listall endpoint (the API pages at 50 by default; lastevaluatedkey is the
+# cursor) mapped through <jq-item-expr>, as a JSON array; [] on any error.
+# Tolerates the response shapes seen so far (msg / data / data.Workflows /
+# bare array). The expression is spliced into the jq program.
+_sg_listall() {
+  local path="$1" expr="$2" key="" body page acc='[]' jqb
+  jqb="$(sg_resolve jq sg_ensure_jq)"
+  while :; do
+    body="$(sg_api_get "$(sg_org_url)/${path}?limit=100${key:+&lastevaluatedkey=$key}" 2>/dev/null)" || break
+    page="$(printf '%s' "$body" | "$jqb" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif (.data.Workflows? | type) == "array" then .data.Workflows elif type == "array" then . else [] end)[] | '"$expr"' | select(. != null and . != "")]' 2>/dev/null)" || page='[]'
+    acc="$("$jqb" -nc --argjson a "$acc" --argjson b "$page" '$a + $b')"
+    key="$(printf '%s' "$body" | "$jqb" -r '.lastevaluatedkey // empty' 2>/dev/null | "$jqb" -sRr @uri)"
+    [ -n "$key" ] || break
+  done
+  printf '%s' "$acc"
 }
+
+# sg_list_workflows <group> — ["wf-name", ...] in the group ([] on 404).
+sg_list_workflows() { _sg_listall "wfgrps/$1/wfs/listall/" '(.ResourceName // .Id)'; }
+
+# sg_list_wfgrps — ["group-name", ...] of the org.
+sg_list_wfgrps() { _sg_listall "wfgrps/listall/" '(.ResourceName // .Id)'; }
 
 # sg_patch_workflow <group> <wf> <json> — PATCH a workflow.
 sg_patch_workflow() { sg_api_patch "$(wf_url "$1" "$2")" "$3"; }

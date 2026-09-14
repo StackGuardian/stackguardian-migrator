@@ -101,14 +101,17 @@ Commands:
   update      Pull the latest version of the migrator (git pull --ff-only) and rebuild
               the Docker image if the Dockerfile changed. Runs on the host.
 
-Each TFC project maps to an SG workflow group named tfc-<project>, created via the
-API if missing. Override a project's target group in .sg/workflow-groups.json
-(\`{"<project-segment>": "<existing-group>"}\`); override groups are not auto-created.
+Each TFC project is imported into the workflow group the transformer assigned to
+it: projectOverrides.<project>.workflowGroup in terraform.tfvars, or tfc-<project>.
+An existing group is reused, a missing one is created (--no-create-groups to
+require it). Workflows are never moved: when a project's workflows already live
+in another group the plan stops and says so.
 
 Options:
   --org NAME         StackGuardian org for import (or set SG_ORG)
   --export-dir DIR   Payload/state output dir (default: ./export)
-  --mapping FILE     Optional project-segment -> group override map (default: .sg/workflow-groups.json)
+  --mapping FILE     Deprecated: project-segment -> group override map (default: .sg/workflow-groups.json);
+                     use projectOverrides.<project>.workflowGroup instead
   --concurrency N    Max parallel jobs for convert/import (default: 4)
   --no-create-groups Do not create missing workflow groups; require them to exist
   --no-variable-sets Skip merging TFC Variable Set variables in the 'all' flow
@@ -327,12 +330,122 @@ current_shell() {
 
 # group_for <segment> -> the SG workflow group for a project segment: an entry
 # from the optional override map, else the default tfc-<segment>.
+# payload_group <file> — the workflow group the transformer wrote into the
+# file's entries (CLIConfiguration.WorkflowGroup.name); "" when absent or mixed.
+payload_group() {
+  "$JQ_BIN" -r '[.[] | .CLIConfiguration.WorkflowGroup.name // empty] | unique | if length == 1 then .[0] else "" end' "$1" 2>/dev/null
+}
+
+# mapped_group <segment> — the legacy .sg/workflow-groups.json entry, if any.
+mapped_group() {
+  [ -f "$MAPPING" ] || return 0
+  "$JQ_BIN" -r --arg k "$1" '.[$k] // empty' "$MAPPING" 2>/dev/null || true
+}
+
+# group_for <segment> — a project's target workflow group: the legacy mapping
+# entry (deprecated), else the group in the payload (projectOverrides.<project>
+# .workflowGroup or tfc-<project>, written by the transformer), else
+# tfc-<segment>. Silent: also runs inside run_parallel subshells.
 group_for() {
-  local seg="$1" override=""
-  if [ -f "$MAPPING" ]; then
-    override="$("$JQ_BIN" -r --arg k "$seg" '.[$k] // empty' "$MAPPING" 2>/dev/null || true)"
+  local seg="$1" f="$EXPORT_DIR/sg-payload.$seg.json" g
+  g="$(mapped_group "$seg")"
+  [ -n "$g" ] || { [ -f "$f" ] && g="$(payload_group "$f")"; }
+  printf '%s' "${g:-tfc-$seg}"
+}
+
+# plan_groups <payload>... — the workflow-group part of the import plan. Each
+# file's target group is checked and shown as reuse (exists), create (missing,
+# created before the import) or missing! (--no-create-groups). Two things block
+# an import and are collected in PLAN_PROBLEMS: a project whose workflows
+# already live in another group (StackGuardian cannot move workflows between
+# groups), and two projects sharing a group with overlapping workflow names (a
+# name is unique within a group). Sets PLAN_TO_CREATE, PLAN_N_CREATE,
+# PLAN_TOTAL_WF; the caller shows the problems and stops after the full plan.
+plan_groups() {
+  local f seg grp count code status prev still n_still names fw gw i legacy=0 line
+  local -a paths=("$@") files=() groups=() counts=() statuses=()
+  PLAN_TO_CREATE=" "
+  PLAN_N_CREATE=0
+  PLAN_TOTAL_WF=0
+  PLAN_PROBLEMS=()
+  for f in "${paths[@]}"; do
+    seg="$(seg_of "$f")"
+    names="$("$JQ_BIN" -c --argjson ws "$(ws_filter_json)" '[.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null)) | .ResourceName]' "$f")"
+    count="$("$JQ_BIN" 'length' <<<"$names")"
+    PLAN_TOTAL_WF=$((PLAN_TOTAL_WF + count))
+    grp="$(group_for "$seg")"
+    [ -n "$(mapped_group "$seg")" ] && legacy=$((legacy + 1))
+    if [ -z "$(payload_group "$f")" ] && [ "$count" -gt 0 ]; then
+      sg_warn "$(basename "$f") carries no (or mixed) CLIConfiguration.WorkflowGroup.name — re-run 'apply'; using $grp"
+    fi
+
+    code="$(wfgroup_http_code "$grp")"
+    case "$code" in
+    200) status="${C_GREEN}reuse${C_RESET}" ;;
+    404)
+      if [ "$CREATE_GROUPS" -eq 1 ]; then
+        status="${C_YELLOW}create${C_RESET}"
+        case "$PLAN_TO_CREATE" in *" $grp "*) ;; *)
+          PLAN_TO_CREATE="$PLAN_TO_CREATE$grp "
+          PLAN_N_CREATE=$((PLAN_N_CREATE + 1))
+          ;;
+        esac
+      else
+        status="${C_RED}missing!${C_RESET}"
+        PLAN_PROBLEMS+=("workflow group '$grp' ($(basename "$f")) does not exist and --no-create-groups is set — create it in StackGuardian or drop the flag")
+      fi
+      ;;
+    401 | 403) die "auth failed (HTTP $code) for org '$ORG' — check SG_API_TOKEN" ;;
+    000) die "could not reach $SG_BASE_URL" ;;
+    *) die "unexpected HTTP $code checking group '$grp'" ;;
+    esac
+
+    # Never move: if this project's workflows were imported into another group
+    # before (state), or would sit in the default tfc-<segment> group when the
+    # target is now a different one, and they still exist there, refuse.
+    prev="$(state_read | "$JQ_BIN" -r --arg s "$seg" '.import[$s].group // empty')"
+    [ -z "$prev" ] && [ "$grp" != "tfc-$seg" ] && prev="tfc-$seg"
+    if [ -n "$prev" ] && [ "$prev" != "$grp" ] && [ "$(wfgroup_http_code "$prev")" = "200" ]; then
+      still="$("$JQ_BIN" -nc --argjson ex "$(sg_list_workflows "$prev")" --argjson mine "$names" '[$mine[] | select(. as $n | $ex | index($n) != null)]')"
+      n_still="$("$JQ_BIN" 'length' <<<"$still")"
+      if [ "$n_still" -gt 0 ]; then
+        status="${C_RED}moved!${C_RESET}"
+        PLAN_PROBLEMS+=("$(basename "$f"): $n_still workflow(s) already live in group '$prev' but the target is now '$grp' — StackGuardian cannot move workflows between groups; keep '$prev' (projectOverrides.\"<project>\".workflowGroup) or delete them from '$prev' first: $("$JQ_BIN" -r 'join(", ")' <<<"$still")")
+      else
+        sg_dim "$(basename "$f"): previous group '$prev' no longer holds these workflows — importing into '$grp'"
+      fi
+    fi
+    files+=("$(basename "$f")")
+    groups+=("$grp")
+    counts+=("$count")
+    statuses+=("$status")
+  done
+
+  # Two projects may share a group only when their workflow names do not overlap.
+  while IFS= read -r line; do
+    [ -n "$line" ] && PLAN_PROBLEMS+=("$line")
+  done < <(for ((i = 0; i < ${#paths[@]}; i++)); do
+    "$JQ_BIN" -c --arg seg "$(seg_of "${paths[i]}")" --arg grp "${groups[i]}" --argjson ws "$(ws_filter_json)" \
+      '{seg: $seg, grp: $grp, names: [.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null)) | .ResourceName]}' "${paths[i]}"
+  done | "$JQ_BIN" -sr '
+      group_by(.grp)[] | select(length > 1) | .[0].grp as $g
+      | ([.[].names[]] | group_by(.) | map(select(length > 1) | .[0])) as $dups
+      | select(($dups | length) > 0)
+      | "workflow name(s) \($dups | join(", ")) appear in more than one project mapped to group \u0027\($g)\u0027 (\([.[].seg] | join(", "))) — a workflow name is unique within a group; give one of the projects its own workflowGroup"')
+
+  fw="$(sg_maxlen 4 "${files[@]}")"
+  gw="$(sg_maxlen 14 "${groups[@]}")"
+  printf '%sImport plan%s (org: %s%s%s, %s)\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$ORG" "$C_RESET" "$SG_BASE_URL" >&2
+  printf "  %s%-${fw}s  %-${gw}s  %-9s %s%s\n" "$C_BOLD" "FILE" "WORKFLOW GROUP" "WORKFLOWS" "STATUS" "$C_RESET" >&2
+  for ((i = 0; i < ${#files[@]}; i++)); do
+    printf "  %-${fw}s  %-${gw}s  %-9s %s\n" "${files[i]}" "${groups[i]}" "${counts[i]}" "${statuses[i]}" >&2
+  done
+  if [ "$legacy" -gt 0 ]; then
+    sg_warn "$(sg_rel "$MAPPING") overrides the group of $legacy project(s) — this file is deprecated; set projectOverrides.\"<project>\".workflowGroup in $(sg_rel "$TFVARS") instead (project names: workspaceProjects in $(sg_rel "$EXPORT_DIR")/migration-summary.json) and re-run 'apply'"
   fi
-  [ -n "$override" ] && echo "$override" || echo "tfc-$seg"
+  for line in ${PLAN_PROBLEMS[@]+"${PLAN_PROBLEMS[@]}"}; do
+    printf '  %s✗%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$line" >&2
+  done
 }
 
 # do_set_triggers <payload> — for each workflow in the file with a non-null
@@ -830,62 +943,26 @@ cmd_import() {
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR")."
 
-  # Build the plan: resolve each project's group, check existence, and decide
-  # which groups need creating. Override groups (from the map) must already exist.
-  local fail=0 to_create=" " n_create=0 total_wf=0 f seg grp count override is_override code status fw gw q i
-  local -a files=() groups=() counts=() statuses=()
+  # The workflow-group part of the plan (reuse/create/missing!/moved!, name
+  # collisions); problems are shown here and stop the run after the full plan.
+  local q grp f seg
+  plan_groups "${PF[@]}"
+
+  # Files already imported in full with identical content are skipped (the
+  # plan shows their workflows as "skip"); --fresh or a --workspace filter
+  # re-imports them.
+  local -a todo=() skip_segs=()
+  local skipped=0 import_rc=0
   for f in "${PF[@]}"; do
     seg="$(seg_of "$f")"
-    count="$("$JQ_BIN" --argjson ws "$(ws_filter_json)" '[.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null))] | length' "$f")"
-    total_wf=$((total_wf + count))
-    override=""
-    [ -f "$MAPPING" ] && override="$("$JQ_BIN" -r --arg k "$seg" '.[$k] // empty' "$MAPPING" 2>/dev/null || true)"
-    if [ -n "$override" ]; then
-      grp="$override"
-      is_override=1
-    else
-      grp="tfc-$seg"
-      is_override=0
+    if [ "$FRESH" -eq 0 ] && [ "${#WS_FILTER[@]}" -eq 0 ] && state_import_done "$seg" "$(sg_sha_files "$f")"; then
+      skipped=$((skipped + 1))
+      skip_segs+=("$seg")
+      continue
     fi
-
-    code="$(wfgroup_http_code "$grp")"
-    case "$code" in
-    200) status="${C_GREEN}exists${C_RESET}" ;;
-    404)
-      if [ "$is_override" -eq 1 ]; then
-        status="${C_RED}missing!${C_RESET}"
-        fail=1
-      elif [ "$CREATE_GROUPS" -eq 1 ]; then
-        status="${C_YELLOW}create${C_RESET}"
-        case "$to_create" in *" $grp "*) ;; *)
-          to_create="$to_create$grp "
-          n_create=$((n_create + 1))
-          ;;
-        esac
-      else
-        status="${C_RED}missing!${C_RESET}"
-        fail=1
-      fi
-      ;;
-    401 | 403) die "auth failed (HTTP $code) for org '$ORG' — check SG_API_TOKEN" ;;
-    000) die "could not reach $SG_BASE_URL" ;;
-    *) die "unexpected HTTP $code checking group '$grp'" ;;
-    esac
-    files+=("$(basename "$f")")
-    groups+=("$grp")
-    counts+=("$count")
-    statuses+=("$status")
+    todo+=("$f")
   done
-  fw="$(sg_maxlen 4 "${files[@]}")"
-  gw="$(sg_maxlen 14 "${groups[@]}")"
-  printf '%sImport plan%s (org: %s%s%s, %s)\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$ORG" "$C_RESET" "$SG_BASE_URL" >&2
-  printf "  %s%-${fw}s  %-${gw}s  %-9s %s%s\n" "$C_BOLD" "FILE" "WORKFLOW GROUP" "WORKFLOWS" "STATUS" "$C_RESET" >&2
-  for ((i = 0; i < ${#files[@]}; i++)); do
-    printf "  %-${fw}s  %-${gw}s  %-9s %s\n" "${files[i]}" "${groups[i]}" "${counts[i]}" "${statuses[i]}" >&2
-  done
-  if [ "$fail" -ne 0 ]; then
-    die "some groups are missing (override groups are not auto-created; create them or remove the override)."
-  fi
+  PLAN_SKIP_SEGS="$([ "${#skip_segs[@]}" -gt 0 ] && names_json "${skip_segs[@]}" || echo '[]')"
 
   # Fallback for workflows the API rejects as above the managed ceiling: a fixed
   # SGDefaultTerraformVersion (missing key = 1.5.7), or an explicit null in
@@ -900,14 +977,17 @@ cmd_import() {
   SG_PRESET_JSON="$(sg_execution_preset)" || SG_PRESET_JSON=""
   preset_labels
   show_import_plan "${PF[@]}"
+  if [ "${#PLAN_PROBLEMS[@]}" -gt 0 ]; then
+    die "${#PLAN_PROBLEMS[@]} problem(s) block the import (the ✗ lines above) — nothing was changed in $ORG"
+  fi
   if [ "$DRY_RUN" -eq 1 ]; then
     sg_success "dry run — nothing was created or changed"
     return 0
   fi
 
   if [ "$ASSUME_YES" -ne 1 ]; then
-    q="Import $total_wf workflow(s) into $ORG"
-    [ "$n_create" -gt 0 ] && q="$q and create $n_create workflow group(s)"
+    q="Import $PLAN_TOTAL_WF workflow(s) into $ORG"
+    [ "$PLAN_N_CREATE" -gt 0 ] && q="$q and create $PLAN_N_CREATE workflow group(s)"
     sg_interactive || die "no terminal to confirm the import — re-run with -y to import without a prompt"
     if ! sg_confirm "$q?" N; then
       sg_warn "import cancelled — nothing was changed in $ORG"
@@ -917,7 +997,7 @@ cmd_import() {
   fi
 
   # Create the missing tfc-* groups before importing into them.
-  for grp in $to_create; do
+  for grp in $PLAN_TO_CREATE; do
     sg_log "creating workflow group $grp"
     wfgroup_create "$grp" || die "failed to create workflow group $grp"
   done
@@ -925,23 +1005,10 @@ cmd_import() {
   SGCLI_BIN="$(sg_resolve sg-cli sg_ensure_sgcli)"
   rm -f "$EXPORT_DIR/terraform-version-fallbacks.log"
 
-  # Resume: skip payload files already imported in full with identical content
-  # (a changed payload or a previous failure re-imports the whole file;
-  # existing workflows are updated via PATCH).
-  local -a todo=()
-  local skipped=0 import_rc=0
-  for f in "${PF[@]}"; do
-    seg="$(seg_of "$f")"
-    if [ "$FRESH" -eq 0 ] && [ "${#WS_FILTER[@]}" -eq 0 ] && state_import_done "$seg" "$(sg_sha_files "$f")"; then
-      skipped=$((skipped + 1))
-      continue
-    fi
-    todo+=("$f")
-  done
   [ "$skipped" -gt 0 ] && sg_log "skipping $skipped payload file(s) already imported and unchanged (--fresh to re-import)"
   if [ "${#todo[@]}" -gt 0 ]; then
     # More than one workflow to import: try a single one first (fail fast).
-    if [ "$total_wf" -gt 1 ]; then probe_import "${todo[0]}"; fi
+    if [ "$PLAN_TOTAL_WF" -gt 1 ]; then probe_import "${todo[0]}"; fi
     run_parallel do_import "$CONC" "importing ${#todo[@]} payload file(s) (retries: $RETRIES)" "${todo[@]}" || import_rc=1
     for f in "${todo[@]}"; do
       seg="$(seg_of "$f")"
