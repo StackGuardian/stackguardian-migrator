@@ -13,6 +13,8 @@ source "$SCRIPT_DIR/tools.sh"
 source "$SCRIPT_DIR/lib/prompt.sh"
 # shellcheck source=lib/tfvars.sh
 source "$SCRIPT_DIR/lib/tfvars.sh"
+# shellcheck source=lib/scope.sh
+source "$SCRIPT_DIR/lib/scope.sh"
 # shellcheck source=lib/tfc_api.sh
 source "$SCRIPT_DIR/lib/tfc_api.sh"
 # shellcheck source=lib/sg_api.sh
@@ -53,8 +55,6 @@ PREFLIGHT_DONE=0
 FRESH=0
 DRY_RUN=0
 SECRET_STUBS=1
-PROJECT_FILTER=()
-WS_FILTER=()
 VERBOSE="${SG_VERBOSE:-0}"
 CONC="${SG_CONCURRENCY:-4}"
 TF_PARALLELISM="${SG_TF_PARALLELISM:-20}"
@@ -122,7 +122,9 @@ Options:
   --fresh            Ignore the saved run state: redo every phase and re-import everything
   --project SEG      Only handle this TFC project (repeatable; matches sg-payload.<SEG>.json)
   --workspace GLOB   Only handle matching workspaces (repeatable; "team-*", "*" = all;
-                     apply exports only them, later phases select the same ones)
+                     replaces workspacenames for this run, every phase selects the same ones)
+  --exclude-workspace GLOB
+                     Leave matching workspaces out (repeatable; adds to tfWorkspaceIgnoreNames)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
@@ -264,45 +266,6 @@ payload_files() {
   fi
 }
 
-# --- run scope ----------------------------------------------------------------
-# terraform.tfvars holds the widest scope (workspacenames, tags, ...); the CLI
-# narrows one run, and every phase applies the same selection: the --workspace
-# globs go to terraform for the export and are matched against the payload
-# entries (ResourceName) afterwards, so 'import --workspace "team-*"' picks the
-# workflows 'apply --workspace "team-*"' exported.
-
-# ws_narrowed — exit 0 when --workspace restricts the run ("*" alone does not,
-# so a CI run over everything keeps the unchanged-file skip).
-ws_narrowed() {
-  local p
-  for p in ${WS_FILTER[@]+"${WS_FILTER[@]}"}; do [ "$p" = "*" ] || return 0; done
-  return 1
-}
-
-# ws_filter_json — the --workspace globs as a JSON array ([] = no filter).
-ws_filter_json() {
-  JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"
-  if ws_narrowed; then names_json "${WS_FILTER[@]}"; else echo '[]'; fi
-}
-
-# ws_selected <name> — exit 0 when <name> is in the run's scope.
-ws_selected() {
-  local p
-  ws_narrowed || return 0
-  for p in "${WS_FILTER[@]}"; do
-    # shellcheck disable=SC2254  # unquoted on purpose: $p is a glob
-    case "$1" in $p) return 0 ;; esac
-  done
-  return 1
-}
-
-# WS_SCOPE_JQ — the same test for jq programs over payload entries. Callers
-# pass --argjson inc "$(ws_filter_json)" and use 'select(.ResourceName | ws_selected)'.
-WS_SCOPE_JQ='
-  def ws_glob($p): "^" + ($p | gsub("(?<c>[.+^$(){}|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$";
-  def ws_selected: . as $n | (($inc | length) == 0 or any($inc[]; . as $p | $n | test(ws_glob($p))));
-'
-
 seg_of() {
   local b
   b="$(basename "$1")"
@@ -397,9 +360,10 @@ plan_groups() {
   PLAN_N_CREATE=0
   PLAN_TOTAL_WF=0
   PLAN_PROBLEMS=()
+  ws_jq_args
   for f in "${paths[@]}"; do
     seg="$(seg_of "$f")"
-    names="$("$JQ_BIN" -c --argjson inc "$(ws_filter_json)" "$WS_SCOPE_JQ"'[.[] | select(.ResourceName | ws_selected) | .ResourceName]' "$f")"
+    names="$("$JQ_BIN" -c "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'[.[] | select(.ResourceName | ws_selected) | .ResourceName]' "$f")"
     count="$("$JQ_BIN" 'length' <<<"$names")"
     PLAN_TOTAL_WF=$((PLAN_TOTAL_WF + count))
     grp="$(group_for "$seg")"
@@ -454,7 +418,7 @@ plan_groups() {
   while IFS= read -r line; do
     [ -n "$line" ] && PLAN_PROBLEMS+=("$line")
   done < <(for ((i = 0; i < ${#paths[@]}; i++)); do
-    "$JQ_BIN" -c --arg seg "$(seg_of "${paths[i]}")" --arg grp "${groups[i]}" --argjson inc "$(ws_filter_json)" \
+    "$JQ_BIN" -c --arg seg "$(seg_of "${paths[i]}")" --arg grp "${groups[i]}" "${WS_JQ_ARGS[@]}" \
       "$WS_SCOPE_JQ"'{seg: $seg, grp: $grp, names: [.[] | select(.ResourceName | ws_selected) | .ResourceName]}' "${paths[i]}"
   done | "$JQ_BIN" -sr '
       group_by(.grp)[] | select(length > 1) | .[0].grp as $g
@@ -604,13 +568,12 @@ cmd_apply() {
   local tflog rc=0
   local -a tfvar_args=()
   TF_PATH="$(dirname "$(sg_resolve jq sg_ensure_jq)"):$PATH"
-  # --workspace replaces the tfvars workspacenames for this run (globs included,
-  # "*" = every workspace); the module applies the tag filters on top.
-  if [ "${#WS_FILTER[@]}" -gt 0 ]; then
-    JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"
-    tfvar_args=(-var "workspacenames=$(names_json "${WS_FILTER[@]}")")
-    sg_log "exporting workspace(s): ${WS_FILTER[*]}"
-  fi
+  # The CLI scope goes to terraform as -var flags (lib/scope.sh): --workspace
+  # replaces workspacenames for this run, --exclude-workspace adds to
+  # tfWorkspaceIgnoreNames; the module applies the tag filters on top.
+  scope_tfvar_args
+  tfvar_args=(${SCOPE_TFVAR_ARGS[@]+"${SCOPE_TFVAR_ARGS[@]}"})
+  [ "${#tfvar_args[@]}" -gt 0 ] && sg_log "run scope: $(scope_describe)"
 
   if [ "$VERBOSE" -eq 1 ]; then
     # shellcheck disable=SC2119
@@ -813,9 +776,6 @@ import_bulk() {
 # Terraform release; newer versions are BSL and are not shipped.
 TF_CEILING_RE='Failed to create ([^:]+): 400: .*above the highest managed version \(([0-9.]+)\)'
 
-# names_json <name...> — JSON array of the given names (for jq --argjson).
-names_json() { printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
-
 # do_import <payload> — bulk-import one file. Workflows rejected because their
 # Terraform version is above the SG ceiling are re-imported with
 # SG_DEFAULT_TF_VERSION (the payload file is patched in place so re-runs and
@@ -825,11 +785,13 @@ do_import() {
   local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() st_ok=() st_failed=() name line tmp names work all_names patch
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
-  # With --workspace, import only the selected workflows (a filtered copy).
+  # With --workspace / --exclude-workspace, import only the selected workflows
+  # (a filtered copy).
   work="$f"
   if ws_narrowed; then
+    ws_jq_args
     work="$(mktemp "$EXPORT_DIR/.subset.$seg.XXXXXX")"
-    "$JQ_BIN" --argjson inc "$(ws_filter_json)" "$WS_SCOPE_JQ"'map(select(.ResourceName | ws_selected))' "$f" >"$work"
+    "$JQ_BIN" "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'map(select(.ResourceName | ws_selected))' "$f" >"$work"
     if [ "$("$JQ_BIN" 'length' "$work")" -eq 0 ]; then
       sg_log "$(basename "$f"): no selected workflows — skipped"
       rm -f "$work"
@@ -928,7 +890,8 @@ probe_import() {
   local f="$1" seg grp name dir probe res
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
-  name="$("$JQ_BIN" -r --argjson inc "$(ws_filter_json)" "$WS_SCOPE_JQ"'first(.[] | select(.ResourceName | ws_selected) | .ResourceName) // empty' "$f")"
+  ws_jq_args
+  name="$("$JQ_BIN" -r "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'first(.[] | select(.ResourceName | ws_selected) | .ResourceName) // empty' "$f")"
   [ -n "$name" ] || return 0
   dir="$(mktemp -d "$EXPORT_DIR/.probe.XXXXXX")"
   probe="$dir/$(basename "$f")"
@@ -988,7 +951,7 @@ cmd_import() {
   # collisions); problems are shown here and stop the run after the full plan.
   local q grp f seg
   plan_groups "${PF[@]}"
-  [ "$PLAN_TOTAL_WF" -gt 0 ] || die "no workflow in $(sg_rel "$EXPORT_DIR")/ matches the --workspace filter (${WS_FILTER[*]-}) — check the glob, or re-run 'apply' with it"
+  [ "$PLAN_TOTAL_WF" -gt 0 ] || die "no workflow in $(sg_rel "$EXPORT_DIR")/ is in scope ($(scope_describe)) — check the globs, or re-run 'apply' with them"
 
   # Files already imported in full with identical content are skipped (the
   # plan shows their workflows as "skip"); --fresh or a --workspace filter
@@ -1095,7 +1058,7 @@ finish_line() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1119,7 +1082,7 @@ _sg_migrate() {
   case "\$prev" in
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
     --mapping) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
-    --org | --concurrency | --project | --workspace) COMPREPLY=(); return ;;
+    --org | --concurrency | --project | --workspace | --exclude-workspace) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
   for w in "\${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
@@ -1173,6 +1136,7 @@ _sg_migrate() {
     '--fresh[Ignore saved run state: redo every phase]' \\
     '*--project[Only this TFC project segment]:segment' \\
     '*--workspace[Only matching workspaces (glob)]:glob' \\
+    '*--exclude-workspace[Leave matching workspaces out (glob)]:glob' \\
     '--all[With clean: also remove config]' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
@@ -1239,6 +1203,11 @@ main() {
       shift
       ;;
     --workspace=*) WS_FILTER+=("${1#*=}") ;;
+    --exclude-workspace)
+      WS_EXCLUDE+=("$2")
+      shift
+      ;;
+    --exclude-workspace=*) WS_EXCLUDE+=("${1#*=}") ;;
     -v | --verbose) VERBOSE=1 ;;
     --all) PURGE=1 ;;
     -h | --help)
@@ -1305,7 +1274,7 @@ main() {
     PHASE_TOTAL=4
     [ "$ENRICH_VARSETS" -eq 1 ] && PHASE_TOTAL=5
     local apply_sha
-    apply_sha="$(sg_sha "$(sg_sha_files "$TFVARS")|$(ws_filter_json)")"
+    apply_sha="$(sg_sha "$(sg_sha_files "$TFVARS")|$(scope_sha_input)")"
     run_phase apply "$apply_sha" cmd_apply
     if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$apply_sha" cmd_enrich; fi
     run_phase convert "$(payload_sha)" cmd_convert

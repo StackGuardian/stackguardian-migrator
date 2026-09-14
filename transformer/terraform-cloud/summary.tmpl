@@ -2,6 +2,9 @@
 
 - Organization: ${summary.organization}
 - Workspaces processed: ${summary.workspaceCount}
+%{ if length(summary.excludedWorkspaces) > 0 ~}
+- Excluded by name (tfWorkspaceIgnoreNames ${jsonencode(summary.tfWorkspaceIgnoreNames)}): ${join(", ", summary.excludedWorkspaces)}
+%{ endif ~}
 
 ## Workflows per project
 %{ for project, info in summary.projects ~}

@@ -87,17 +87,19 @@ tfc_list_workspaces() {
              vcs_provider: (.attributes."vcs-repo"."service-provider" // ""), vcs_url: (.attributes."vcs-repo"."repository-http-url" // ""), vcs_identifier: (.attributes."vcs-repo".identifier // "")}]'
 }
 
-# tfc_select_workspaces <workspaces-json> <names-json> <tags-json> <ignore-json>
-# — the subset the transformer exports, mirroring tfe_workspace_ids: name globs
-# (["*"] = all), include tags (a workspace must carry all of them), exclude
-# tags (any of them drops the workspace). null/[] disables a filter.
+# tfc_select_workspaces <workspaces-json> <names-json> <tags-json> <ignore-tags-json> [ignore-names-json]
+# — the subset the transformer exports, mirroring tfe_workspace_ids plus the
+# module's tfWorkspaceIgnoreNames: name globs (["*"] = all), include tags (a
+# workspace must carry all of them), exclude tags (any of them drops the
+# workspace), exclude name globs. null/[] disables a filter.
 tfc_select_workspaces() {
-  printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" -c --argjson names "${2:-null}" --argjson tags "${3:-null}" --argjson ignore "${4:-null}" '
-    def glob($p): ("^" + ($p | gsub("\\*"; ".*")) + "$");
+  printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" -c --argjson names "${2:-null}" --argjson tags "${3:-null}" --argjson ignore "${4:-null}" --argjson ignoreNames "${5:-null}" '
+    def glob($p): ("^" + ($p | gsub("(?<c>[.+^$(){}|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$");
     [ .[]
       | select(($names == null) or ($names == ["*"]) or ([$names[] as $p | (.name | test(glob($p)))] | any))
       | select(($tags == null) or (($tags | length) == 0) or ([$tags[] as $t | ([.tags[]?] | index($t) != null)] | all))
       | select(($ignore == null) or (($ignore | length) == 0) or (([.tags[]?] | map(select(. as $t | $ignore | index($t) != null)) | length) == 0))
+      | select(($ignoreNames == null) or (($ignoreNames | length) == 0) or ([$ignoreNames[] as $p | (.name | test(glob($p)))] | any | not))
     ]'
 }
 

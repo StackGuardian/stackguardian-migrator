@@ -119,12 +119,13 @@ show_import_plan() {
   local -a names=() groups=()
   summary="$EXPORT_DIR/migration-summary.json"
   [ -f "$summary" ] || summary=""
+  ws_jq_args
   for f in "$@"; do
     seg="$(seg_of "$f")"
     grp="$(group_for "$seg")"
     existing="$(sg_list_workflows "$grp")"
     printf '%s' "$existing" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || existing='[]'
-    rows="$("$JQ_BIN" -r --argjson ex "$existing" --arg grp "$grp" --argjson inc "$(ws_filter_json)" \
+    rows="$("$JQ_BIN" -r --argjson ex "$existing" --arg grp "$grp" "${WS_JQ_ARGS[@]}" \
       --argjson skip "${PLAN_SKIP_SEGS:-[]}" --arg seg "$seg" \
       --slurpfile sum "${summary:-/dev/null}" "$WS_SCOPE_JQ"'
       ($sum[0] // {}) as $S

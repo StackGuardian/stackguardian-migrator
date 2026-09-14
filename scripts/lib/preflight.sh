@@ -45,14 +45,23 @@ preflight_tfc() {
     esac
     return 0
   fi
-  # Workspace selection: mirror the module's filters (names glob, include/exclude tags).
+  # Workspace selection: mirror the module's filters (names glob, include/exclude
+  # tags, exclude names) with the CLI scope applied (lib/scope.sh, when loaded),
+  # so the count is the one the apply that follows will export.
   if body="$(tfc_list_workspaces "$org" 2>/dev/null)"; then
-    sel="$(tfc_select_workspaces "$body" "$(tfvars_get_json .workspacenames)" "$(tfvars_get_json .tfWorkspaceTags)" "$(tfvars_get_json .tfWorkspaceIgnoreTags)")"
+    local names ignore_names
+    names="$(tfvars_get_json .workspacenames)"
+    ignore_names="$(tfvars_get_json .tfWorkspaceIgnoreNames)"
+    if declare -F ws_exclude_json >/dev/null; then
+      [ "${#WS_FILTER[@]}" -gt 0 ] && names="$(names_json "${WS_FILTER[@]}")"
+      ignore_names="$(ws_exclude_json)"
+    fi
+    sel="$(tfc_select_workspaces "$body" "$names" "$(tfvars_get_json .tfWorkspaceTags)" "$(tfvars_get_json .tfWorkspaceIgnoreTags)" "$ignore_names")"
     n="$(printf '%s' "$sel" | "$jqb" 'length')"
     if [ "$n" -gt 0 ]; then
       pf_ok "$n workspace(s) match the selection (of $(printf '%s' "$body" | "$jqb" 'length') in the org)"
     else
-      pf_warn "no workspace matches workspacenames/tfWorkspaceTags/tfWorkspaceIgnoreTags — apply would export nothing"
+      pf_warn "no workspace matches workspacenames/tfWorkspaceTags/tfWorkspaceIgnoreTags/tfWorkspaceIgnoreNames${WS_FILTER[*]:+ and the --workspace/--exclude-workspace flags} — apply would export nothing"
     fi
     PF_TFC_WORKSPACES="$body"
     PF_TFC_SELECTED="$sel"

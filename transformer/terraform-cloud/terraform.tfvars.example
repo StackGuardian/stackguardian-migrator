@@ -13,6 +13,10 @@ tfWorkspaceTags = null
 # Specify a list of tags in workspace tags to exclude, or leave empty to include all, for example: [exclude"]
 tfWorkspaceIgnoreTags = null
 
+# Workspace names to leave out (globs, e.g. ["sandbox-*", "*-scratch"]), applied
+# after the filters above. sg-migrate.sh --exclude-workspace adds to this list for one run.
+tfWorkspaceIgnoreNames = []
+
 # Directory to export Terraform files to
 exportPath = "export"
 

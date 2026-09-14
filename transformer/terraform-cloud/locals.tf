@@ -1,7 +1,18 @@
 locals {
-  # data.tfe_workspace_ids.data.ids is a map of workspace name => workspace id.
-  workflowIds   = [for name, id in data.tfe_workspace_ids.data.ids : id]
-  workflowNames = [for name, id in data.tfe_workspace_ids.data.ids : name]
+  # Workspace selection. data.tfe_workspace_ids applies workspacenames and the
+  # tag filters inside TFC (name => id); tfWorkspaceIgnoreNames has no provider
+  # equivalent and is applied here, so everything below iterates
+  # local.selectedWorkspaces rather than the data source.
+  ignoreNameRegexes = [for p in var.tfWorkspaceIgnoreNames : "^${replace(replace(replace(p, ".", "\\."), "*", ".*"), "?", ".")}$"]
+  excludedWorkspaces = sort([
+    for name, id in data.tfe_workspace_ids.data.ids : name
+    if anytrue([for r in local.ignoreNameRegexes : can(regex(r, name))])
+  ])
+  selectedWorkspaces = {
+    for name, id in data.tfe_workspace_ids.data.ids : name => id if !contains(local.excludedWorkspaces, name)
+  }
+  workflowIds   = [for name, id in local.selectedWorkspaces : id]
+  workflowNames = [for name, id in local.selectedWorkspaces : name]
 
   # project id => project name, used to name the per-project payload files and
   # to set a human-readable WorkflowGroup name in the payload.
@@ -60,7 +71,7 @@ locals {
   # TFC-specific variables (TFC_*, TFE_* by default) are meaningless in SG and
   # are stripped; recorded per workspace so the summary can list them.
   strippedVars = {
-    for name, id in data.tfe_workspace_ids.data.ids :
+    for name, id in local.selectedWorkspaces :
     name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
     if anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])]
   }
@@ -69,7 +80,7 @@ locals {
   # (stripCloudAuthVars). Stripped whether sensitive or not: a sensitive one
   # must not become a placeholder secret that fights the connector either.
   strippedCloudAuthVars = {
-    for name, id in data.tfe_workspace_ids.data.ids :
+    for name, id in local.selectedWorkspaces :
     name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
       if v.category == "env"
       && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])
@@ -80,7 +91,7 @@ locals {
   # migrated. Record them per workspace so the summary can flag them
   # (stripped variables excluded — nobody needs a secret stub for those).
   sensitiveVars = {
-    for name, id in data.tfe_workspace_ids.data.ids :
+    for name, id in local.selectedWorkspaces :
     name => [for v in data.tfe_variables.data[id].variables : "${v.category}:${v.name}"
       if v.sensitive
       && !anytrue([for p in var.ignoreVarPatterns : can(regex(p, v.name))])
@@ -142,7 +153,7 @@ locals {
   # win over the SGDefault* values; everything else is derived from the TFC
   # workspace.
   workflowPayload = {
-    for wsName, wsId in data.tfe_workspace_ids.data.ids : wsName => merge({
+    for wsName, wsId in local.selectedWorkspaces : wsName => merge({
       CLIConfiguration = {
         "WorkflowGroup" : {
           # SG workflow group per TFC project: projectOverrides[<project>].workflowGroup,
@@ -284,8 +295,11 @@ locals {
 
   # Machine-readable migration summary (also rendered to markdown).
   summary = {
-    organization           = var.tfOrg
-    workspaceCount         = length(local.workflowNames)
+    organization   = var.tfOrg
+    workspaceCount = length(local.workflowNames)
+    # Workspaces matched by the TFC filters but dropped by tfWorkspaceIgnoreNames.
+    excludedWorkspaces     = local.excludedWorkspaces
+    tfWorkspaceIgnoreNames = var.tfWorkspaceIgnoreNames
     projectWorkspaceCounts = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
     # Per project (raw TFC name): payload file segment, SG workflow group, size.
     projects = {

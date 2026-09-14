@@ -154,7 +154,7 @@ wizard_tfc() {
 
   # What the selection looks like (drives the review and the SG step's hints).
   if [ -n "$W_TFC_WS_JSON" ]; then
-    sel="$(tfc_select_workspaces "$W_TFC_WS_JSON" "$W_WSNAMES_JSON" "$W_TAGS_JSON" "$W_IGNORE_TAGS_JSON")"
+    sel="$(tfc_select_workspaces "$W_TFC_WS_JSON" "$W_WSNAMES_JSON" "$W_TAGS_JSON" "$W_IGNORE_TAGS_JSON" "${W_IGNORE_NAMES_JSON:-[]}")"
     W_WS_TOTAL="$wsn"
     W_WS_COUNT="$(printf '%s' "$sel" | "$jqb" 'length')"
     W_WS_ABOVE_CEILING="$(printf '%s' "$sel" | "$jqb" '[.[] | select((.terraform_version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | select(((.terraform_version | split(".") | map(tonumber)) as $v | ($v[0] > 1) or ($v[0] == 1 and $v[1] > 5) or ($v[0] == 1 and $v[1] == 5 and $v[2] > 7)))] | length')"
@@ -540,8 +540,11 @@ wizard_review() {
   names) scope="workspaces named $(_w_csv "$W_WSNAMES_JSON")" ;;
   *) scope="all workspaces" ;;
   esac
+  if [ "${W_IGNORE_NAMES_JSON:-[]}" != "[]" ]; then
+    scope="$scope, except $(_w_csv "$W_IGNORE_NAMES_JSON") (tfWorkspaceIgnoreNames)"
+  fi
   if [ -n "${W_WS_COUNT:-}" ]; then
-    if [ "${W_SCOPE:-all}" = "all" ]; then scope="$scope ($W_WS_COUNT)"; else scope="$scope — $W_WS_COUNT of $W_WS_TOTAL match"; fi
+    if [ "${W_SCOPE:-all}" = "all" ] && [ "${W_IGNORE_NAMES_JSON:-[]}" = "[]" ]; then scope="$scope ($W_WS_COUNT)"; else scope="$scope — $W_WS_COUNT of $W_WS_TOTAL match"; fi
   fi
   sg_row "Workspaces" "$scope"
   if [ -n "${W_PROJECT_ROWS:-}" ]; then
@@ -628,6 +631,9 @@ wizard_run() {
   # tfvars cache is invalidated by tfvars_write).
   W_WS_OVERRIDES_JSON="$(tfvars_get_json .workspaceOverrides)"
   [ "$W_WS_OVERRIDES_JSON" = "null" ] && W_WS_OVERRIDES_JSON='{}'
+  # The name exclude list is a hand-edit / CI knob: kept as is, never asked.
+  W_IGNORE_NAMES_JSON="$(tfvars_get_json .tfWorkspaceIgnoreNames)"
+  [ "$W_IGNORE_NAMES_JSON" = "null" ] && W_IGNORE_NAMES_JSON='[]'
   wizard_tfc && wizard_sg && wizard_projects && wizard_policy || { sg_err "init aborted"; return 1; }
   wizard_templates
   wizard_review || { sg_log "nothing written"; return 1; }

@@ -23,7 +23,7 @@ resource "local_file" "summaryMd" {
 # `terraform login` credentials file or TFE_TOKEN, so it never enters TF state.
 # Requires `curl` and `jq` on PATH (provided by the Docker image / orchestrator).
 resource "null_resource" "exportState" {
-  for_each = var.exportStateFiles ? data.tfe_workspace_ids.data.ids : {}
+  for_each = var.exportStateFiles ? local.selectedWorkspaces : {}
 
   # Idempotent by default (keyed by stable workspace name/id); forceStateRefresh
   # re-pulls every workspace.
