@@ -731,6 +731,38 @@ do_import() {
   return "$rc"
 }
 
+# probe_import <payload>... — fail fast: import a single workflow (the first
+# selected one of the first file) and require both the create and its state
+# upload to succeed before the rest is imported in parallel. An environment
+# problem (wrong connector kind, a store that rejects the upload, a read-only
+# token) then costs one workflow instead of all of them. The probe workflow is
+# re-imported with its file afterwards (sg-cli updates it in place).
+probe_import() {
+  local f="$1" seg grp name dir probe res
+  seg="$(seg_of "$f")"
+  grp="$(group_for "$seg")"
+  name="$("$JQ_BIN" -r --argjson ws "$(ws_filter_json)" 'first(.[] | select(($ws | length) == 0 or (.ResourceName as $n | $ws | index($n) != null)) | .ResourceName) // empty' "$f")"
+  [ -n "$name" ] || return 0
+  dir="$(mktemp -d "$EXPORT_DIR/.probe.XXXXXX")"
+  probe="$dir/$(basename "$f")"
+  "$JQ_BIN" --arg n "$name" 'map(select(.ResourceName == $n))' "$f" >"$probe"
+  sg_log "probing with one workflow before importing the rest: $grp/$name"
+  do_import "$probe" || true
+  res="$EXPORT_DIR/.import-result.$seg.json"
+  if [ -f "$res" ] && [ "$("$JQ_BIN" '(.failed | length) + (.state_failed | length)' "$res")" -eq 0 ]; then
+    if [ "$("$JQ_BIN" '.state_uploaded | length' "$res")" -gt 0 ]; then
+      sg_success "probe ok — $name created and its state uploaded; importing the rest"
+    else
+      sg_success "probe ok — $name created (no state file to upload); importing the rest"
+    fi
+    rm -rf "$dir" "$res"
+    return 0
+  fi
+  [ -f "$res" ] && state_record_import "$seg" "$(cat "$res")"
+  rm -rf "$dir" "$res"
+  die "probe failed for $grp/$name (see above) — nothing else was imported; fix the cause and re-run '$PROG import'"
+}
+
 # Print the customer-facing notice when any workflow fell back to the default
 # Terraform version during this import.
 tf_fallback_notice() {
@@ -875,6 +907,8 @@ cmd_import() {
   done
   [ "$skipped" -gt 0 ] && sg_log "skipping $skipped payload file(s) already imported and unchanged (--fresh to re-import)"
   if [ "${#todo[@]}" -gt 0 ]; then
+    # More than one workflow to import: try a single one first (fail fast).
+    if [ "$total_wf" -gt 1 ]; then probe_import "${todo[0]}"; fi
     run_parallel do_import "$CONC" "importing ${#todo[@]} payload file(s) (retries: $RETRIES)" "${todo[@]}" || import_rc=1
     for f in "${todo[@]}"; do
       seg="$(seg_of "$f")"
