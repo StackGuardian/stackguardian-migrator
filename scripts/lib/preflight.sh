@@ -5,13 +5,18 @@
 # work and that everything terraform.tfvars refers to actually exists in TFC
 # and StackGuardian — and that the pieces agree with each other (VCS connector
 # kind vs. sourceConfigDestKind, repo URL prefix vs. where the TFC repositories
-# live). Prints one line per check (✓ ok, ! warning, ✗ failure) and fails the
-# run when any check fails. Skipped with --skip-preflight.
+# live). Prints ✓ / ! / ✗ lines and fails the run when any check fails.
+# Skipped with --skip-preflight. Not every passing check gets its own line:
+# related ones are reported together (one line per connector, the project
+# inside the selection line, version and runners) and a few routine ones are
+# only counted (pf_pass) — a failing check always prints, naming the tfvars
+# field to fix.
 
 PF_OK=0
 PF_FAIL=0
 PF_WARN=0
 pf_ok() { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; PF_OK=$((PF_OK + 1)); }
+pf_pass() { PF_OK=$((PF_OK + 1)); }
 pf_warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; PF_WARN=$((PF_WARN + 1)); }
 pf_fail() { printf '  %s✗%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*" >&2; PF_FAIL=$((PF_FAIL + 1)); }
 
@@ -35,9 +40,9 @@ preflight_tfc() {
     esac
     return 0
   fi
-  pf_ok "TFC credentials valid ($host, via $(tfc_token_source))"
+  pf_pass # credentials; reported together with the organisation below
   if tfc_http "organizations/$org" >/dev/null; then
-    pf_ok "TFC organisation '$org' accessible"
+    pf_ok "TFC organisation '$org' accessible ($host, via $(tfc_token_source))"
   else
     case "$TFC_HTTP_CODE" in
     404 | 403) pf_fail "TFC organisation '$org' not found or not accessible with this token (HTTP $TFC_HTTP_CODE) — check tfOrg" ;;
@@ -49,7 +54,7 @@ preflight_tfc() {
   # tags, exclude names) with the CLI scope applied (lib/scope.sh, when loaded),
   # so the count is the one the apply that follows will export.
   if body="$(tfc_list_workspaces "$org" 2>/dev/null)"; then
-    local names ignore_names tags ignore_tags projects from_cli=0 p slug hit
+    local names ignore_names tags ignore_tags projects from_cli=0 p slug hit in_projects=""
     PF_TFC_PROJECTS="$(tfc_list_projects "$org" 2>/dev/null || echo '[]')"
     names="$(tfvars_get_json .workspacenames)"
     ignore_names="$(tfvars_get_json .tfWorkspaceIgnoreNames)"
@@ -73,7 +78,9 @@ preflight_tfc() {
         slug="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g')"
         hit="$(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r --arg s "$slug" '[.[] | select((.name | ascii_downcase | gsub("[^a-z0-9-]+"; "-")) == $s) | .name] | first // empty')"
         if [ -n "$hit" ]; then
-          pf_ok "project '$p' is TFC project '$hit'"
+          # Named as in TFC: part of the selection line below; a slug is spelled out.
+          if [ "$p" = "$hit" ]; then pf_pass; else pf_ok "project '$p' is TFC project '$hit'"; fi
+          in_projects="$in_projects${in_projects:+, }'$hit'"
         elif [ "$from_cli" -eq 1 ]; then
           pf_fail "--project '$p' matches no TFC project in '$org' (projects: $(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r '[.[].name] | join(", ")'))"
         else
@@ -87,7 +94,7 @@ preflight_tfc() {
     fi
     n="$(printf '%s' "$sel" | "$jqb" 'length')"
     if [ "$n" -gt 0 ]; then
-      pf_ok "$n workspace(s) match the selection (of $(printf '%s' "$body" | "$jqb" 'length') in the org)"
+      pf_ok "$n workspace(s) match the selection${in_projects:+ in project(s) $in_projects} (of $(printf '%s' "$body" | "$jqb" 'length') in the org)"
     else
       local cli=""
       declare -F scope_describe >/dev/null && cli="$(scope_describe)"
@@ -140,7 +147,9 @@ preflight_sg() {
     /integrations/*)
       if printf '%s' "$names" | "$jqb" -e --arg n "${id#/integrations/}" 'index($n) != null' >/dev/null; then
         kind="$(sg_integration_type "$ints" "$id")"
-        pf_ok "$label connector ${id#/integrations/} exists${kind:+ ($kind)}"
+        # The default VCS connector is reported by preflight_config together
+        # with its kind and the repo URL prefix (one line per connector).
+        if [ "$label" = "VCS" ]; then pf_pass; else pf_ok "$label connector ${id#/integrations/}${kind:+ ($kind)}"; fi
       else
         pf_fail "$label connector $id not found in org '$ORG' (available: $(printf '%s' "$names" | "$jqb" -r 'join(", ")'))"
       fi
@@ -171,11 +180,10 @@ preflight_sg() {
         ((.workspaceOverrides // {}) | to_entries[]? | .value.RunnerConstraints // {} | select(.type == "private") | .names[]?) ]
       | unique | .[]')
   if tfvars_is_null SGDefaultRunnerConstraints; then
-    if [ "${PF_PRESET_READ:-0}" -eq 1 ]; then
-      pf_ok "runners: from the org's execution preset — $(sg_preset_runner_desc "$PF_PRESET")"
-    else
-      pf_ok "runners: from the org's execution preset (platform default: shared runners)"
-    fi
+    # Reported by preflight_config next to the Terraform version policy (one
+    # line when both come from the preset).
+    PF_RUNNERS_PRESET=1
+    pf_pass
   else
     n="$(tfvars_json | "$jqb" -r '(.SGDefaultRunnerConstraints // {}).type // "shared"')"
     if [ "$n" = "shared" ]; then pf_ok "runners: StackGuardian shared runners"; fi
@@ -211,12 +219,15 @@ preflight_config() {
   conn="$(tfvars_get .SGDefaultVCSAuthIntegrationID)"
   conn_kind=""
   [ -n "${PF_SG_INTS:-}" ] && [ -n "$conn" ] && conn_kind="$(sg_vcs_kind_of "$(sg_integration_type "$PF_SG_INTS" "$conn")")"
+  # One line for the VCS side: connector (verified in preflight_sg), kind and
+  # — when it checks out below — the repo URL prefix.
+  local vcs_line="" prefix_ok=""
   if [ -n "$conn_kind" ] && [ "$conn_kind" != "$v" ]; then
     pf_fail "VCS kind $v does not match connector ${conn#/integrations/}, which is a $conn_kind connector — set SGDefaultSourceConfigDestKind = \"$conn_kind\" (or pick another connector)"
   elif [ -n "$conn_kind" ]; then
-    pf_ok "VCS kind $v matches connector ${conn#/integrations/}"
+    vcs_line="VCS connector ${conn#/integrations/} ($v)"
   else
-    pf_ok "VCS kind $v"
+    vcs_line="VCS kind $v"
   fi
 
   # Repo URL prefix: compare with where the TFC workspaces' repositories live
@@ -238,7 +249,7 @@ preflight_config() {
     pf_fail "SGDefaultIACVCSRepoPrefix is not set — the repositories' base URL, e.g. https://github.com"
   elif [ -n "$tfc_prefix" ]; then
     case "$host" in
-    *"$(_pf_host "$tfc_prefix")") pf_ok "repo URL prefix $prefix matches the TFC repositories" ;;
+    *"$(_pf_host "$tfc_prefix")") prefix_ok="repositories under $prefix, as in TFC" ;;
     *) pf_warn "repo URL prefix $prefix does not match where the TFC repositories live ($tfc_prefix) — every workflow would clone from the wrong place unless the repositories moved; check SGDefaultIACVCSRepoPrefix" ;;
     esac
   else
@@ -246,8 +257,14 @@ preflight_config() {
     if [ -n "$kind" ] && [ "$kind" != "$v" ] && [ "$v" != "GIT_OTHER" ]; then
       pf_warn "repo URL prefix $prefix looks like $kind but the VCS kind is $v — check SGDefaultIACVCSRepoPrefix / SGDefaultSourceConfigDestKind"
     else
-      pf_ok "repo URL prefix $prefix"
+      prefix_ok="repositories under $prefix"
     fi
+  fi
+  if [ -n "$vcs_line" ]; then
+    [ -n "$prefix_ok" ] && pf_pass # the prefix check, folded into the connector line
+    pf_ok "$vcs_line${prefix_ok:+, $prefix_ok}"
+  elif [ -n "$prefix_ok" ]; then
+    pf_ok "repo URL prefix $prefix"
   fi
   if [ -n "$tfc_kind" ] && [ "$tfc_kind" != "$v" ] && [ "$v" != "GIT_OTHER" ]; then
     pf_warn "the TFC workspaces are connected to $(tfc_vcs_label_for "$prov") but the VCS kind is $v"
@@ -270,14 +287,14 @@ preflight_config() {
   while IFS= read -r v; do
     [ -n "$v" ] || continue
     case "$v" in
-    AWS_STATIC | AWS_RBAC | AWS_OIDC | AZURE_STATIC | AZURE_OIDC | AZURE_MANAGED_ID_OIDC | GCP_STATIC | GCP_OIDC) pf_ok "cloud connector kind $v" ;;
+    AWS_STATIC | AWS_RBAC | AWS_OIDC | AZURE_STATIC | AZURE_OIDC | AZURE_MANAGED_ID_OIDC | GCP_STATIC | GCP_OIDC) pf_pass ;; # shown with the connector (preflight_sg)
     *) pf_fail "cloud connector kind '$v' (DeploymentPlatformConfig) is not one of AWS_STATIC, AWS_RBAC, AWS_OIDC, AZURE_STATIC, AZURE_OIDC, AZURE_MANAGED_ID_OIDC, GCP_STATIC, GCP_OIDC — a VCS connector was picked as the cloud connector?" ;;
     esac
   done < <(tfvars_json | "$jqb" -r '[ (.SGDefaultDeploymentPlatformConfig // [])[]?.kind, ((.projectOverrides // {}) | to_entries[]? | .value.DeploymentPlatformConfig // [] | .[]?.kind), ((.workspaceOverrides // {}) | to_entries[]? | .value.DeploymentPlatformConfig // [] | .[]?.kind) ] | map(select(. != null)) | unique | .[]')
 
   # Cloud credential env vars: stripped per connector kind, or kept.
   if [ "$(tfvars_get .stripCloudAuthVars true)" != "false" ]; then
-    pf_ok "cloud credential variables (ARM_*, AWS_ACCESS_KEY_ID, GOOGLE_CREDENTIALS, ... per connector kind) are stripped — the connector provides them (stripCloudAuthVars)"
+    pf_ok "cloud credential env vars stripped, the connector provides them (stripCloudAuthVars)"
   else
     pf_ok "cloud credential variables are kept (stripCloudAuthVars = false)"
   fi
@@ -295,13 +312,26 @@ preflight_config() {
   esac
   [ "${PF_PRESET_READ:-0}" -eq 1 ] && preset_note="$(sg_preset_desc "$PF_PRESET")"
   if tfvars_is_null SGDefaultTerraformVersion; then v=""; else v="$(tfvars_get .SGDefaultTerraformVersion TERRAFORM-1.5.7)"; fi
+  # Runners left to the preset (preflight_sg) are reported here: on the version
+  # line when that is preset too, else on their own.
+  local what="Terraform version" runners_note=""
+  if [ "${PF_RUNNERS_PRESET:-0}" -eq 1 ]; then
+    if [ "$src" = "preset" ]; then
+      what="Terraform version and runners"
+    elif [ "${PF_PRESET_READ:-0}" -eq 1 ]; then
+      runners_note="runners: from the org's execution preset — $(sg_preset_runner_desc "$PF_PRESET")"
+    else
+      runners_note="runners: from the org's execution preset (platform default: shared runners)"
+    fi
+  fi
   if [ "$src" = "preset" ]; then
     if [ -n "$preset_note" ]; then
-      pf_ok "Terraform version: from the org's execution preset — $preset_note"
+      pf_ok "$what: from the org's execution preset — $preset_note"
     else
-      pf_warn "Terraform version: from the org's execution preset, which could not be read here (platform default if none is configured: managed Terraform 1.5.7 on shared runners)"
+      pf_warn "$what: from the org's execution preset, which could not be read here (platform default: managed Terraform 1.5.7 on shared runners)"
     fi
   else
+    [ -n "$runners_note" ] && pf_ok "$runners_note"
     if [ -z "$v" ]; then
       pf_ok "Terraform version: pinned TFC versions are carried over; unpinned or rejected pins go to the execution preset${preset_note:+ — $preset_note}"
     elif [[ "$v" =~ ^TERRAFORM-([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -321,15 +351,18 @@ preflight_config() {
   export_path="$(tfvars_get .exportPath export)"
   case "$export_path" in /*) want="$export_path" ;; *) want="$SG_REPO_ROOT/$export_path" ;; esac
   if [ "$(cd "$(dirname "$want")" 2>/dev/null && pwd)/$(basename "$want")" = "$(cd "$(dirname "$EXPORT_DIR")" 2>/dev/null && pwd)/$(basename "$EXPORT_DIR")" ]; then
-    pf_ok "export directory $(sg_rel "$EXPORT_DIR")/"
+    pf_pass # export directory agrees with exportPath
   else
     pf_warn "exportPath in tfvars ($export_path) differs from the orchestrator's export dir ($(sg_rel "$EXPORT_DIR")) — payloads would be written where later phases don't look"
   fi
+  # Override keys vs. TFC: one summary line for the matches, a warning per typo.
+  local n_ws_ov=0 n_pr_ov=0 ov_note=""
   if [ -n "${PF_TFC_WORKSPACES:-}" ]; then
     while IFS= read -r v; do
       [ -n "$v" ] || continue
       if printf '%s' "$PF_TFC_WORKSPACES" | "$jqb" -e --arg n "$v" '[.[].name] | index($n) != null' >/dev/null; then
-        pf_ok "workspaceOverrides['$v'] matches a workspace"
+        pf_pass
+        n_ws_ov=$((n_ws_ov + 1))
       else
         pf_warn "workspaceOverrides['$v'] does not match any workspace in the org (typo?)"
       fi
@@ -339,12 +372,16 @@ preflight_config() {
     while IFS= read -r v; do
       [ -n "$v" ] || continue
       if printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -e --arg n "$v" '[.[].name] | index($n) != null' >/dev/null; then
-        pf_ok "projectOverrides['$v'] matches a TFC project"
+        pf_pass
+        n_pr_ov=$((n_pr_ov + 1))
       else
         pf_warn "projectOverrides['$v'] matches no TFC project in the org (typo? projects: $(printf '%s' "$PF_TFC_PROJECTS" | "$jqb" -r '[.[].name] | join(", ")')) — its settings would apply to nothing"
       fi
     done < <(tfvars_json | "$jqb" -r '(.projectOverrides // {}) | keys[]')
   fi
+  [ "$n_pr_ov" -gt 0 ] && ov_note="$n_pr_ov projectOverrides"
+  [ "$n_ws_ov" -gt 0 ] && ov_note="$ov_note${ov_note:+ and }$n_ws_ov workspaceOverrides"
+  [ -n "$ov_note" ] && printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$ov_note entries name existing TFC projects/workspaces" >&2
   return 0
 }
 
@@ -390,6 +427,7 @@ preflight_run() {
   PF_SG_INTS=""
   PF_PRESET="{}"
   PF_PRESET_READ=0
+  PF_RUNNERS_PRESET=0
   local parse_err
   if ! parse_err="$(tfvars_valid)"; then
     pf_fail "$(sg_rel "$TFVARS") is not valid HCL: ${parse_err:-parse error}"
