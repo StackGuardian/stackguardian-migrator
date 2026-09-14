@@ -6,15 +6,23 @@
 _TFVARS_JSON=""
 _TFVARS_JSON_FOR=""
 
-# tfvars_json — the whole tfvars file as JSON (empty object when missing).
+# tfvars_json — the whole tfvars file as JSON (empty object when missing),
+# merged with the run's configuration overlay (TFVARS_OVERLAY_JSON from
+# lib/scope.sh: --set / --cloud-connector / ...), so every reader sees the
+# values the run actually uses. Objects merge deeply, so an overlay entry for
+# one project keeps the other projectOverrides of the file.
 tfvars_json() {
-  if [ -z "$_TFVARS_JSON" ] || [ "$_TFVARS_JSON_FOR" != "$TFVARS" ]; then
+  local overlay="${TFVARS_OVERLAY_JSON:-{\}}"
+  if [ -z "$_TFVARS_JSON" ] || [ "$_TFVARS_JSON_FOR" != "$TFVARS|$overlay" ]; then
     if [ -f "$TFVARS" ]; then
       _TFVARS_JSON="$("$(sg_resolve hcl2json sg_ensure_hcl2json)" "$TFVARS" 2>/dev/null || echo '{}')"
     else
       _TFVARS_JSON='{}'
     fi
-    _TFVARS_JSON_FOR="$TFVARS"
+    if [ "$overlay" != "{}" ]; then
+      _TFVARS_JSON="$(printf '%s' "$_TFVARS_JSON" | "$(sg_resolve jq sg_ensure_jq)" -c --argjson o "$overlay" '. * $o')"
+    fi
+    _TFVARS_JSON_FOR="$TFVARS|$overlay"
   fi
   printf '%s' "$_TFVARS_JSON"
 }
@@ -23,13 +31,15 @@ tfvars_json() {
 # JSON, e.g. tfvars_get '.tfOrg'. Prints the default when null/missing.
 tfvars_get() {
   local expr="$1" def="${2-}" v
-  v="$(tfvars_json | "$(sg_resolve jq sg_ensure_jq)" -r "$expr // empty" 2>/dev/null || true)"
+  # Not `// empty`: jq's // also swallows false, and false is a real value here
+  # (stripCloudAuthVars = false, exportStateFiles = false).
+  v="$(tfvars_json | "$(sg_resolve jq sg_ensure_jq)" -r "[$expr][0] | if . == false then \"false\" else (. // empty) end" 2>/dev/null || true)"
   printf '%s' "${v:-$def}"
 }
 
 # tfvars_get_json <jq-expr> — compact JSON value of an expression (or null).
 tfvars_get_json() {
-  tfvars_json | "$(sg_resolve jq sg_ensure_jq)" -c "$1 // null" 2>/dev/null || echo null
+  tfvars_json | "$(sg_resolve jq sg_ensure_jq)" -c "[$1][0] | if . == false then false else (. // null) end" 2>/dev/null || echo null
 }
 
 # tfvars_has <key> — exit 0 when the top-level key is present in the file (an

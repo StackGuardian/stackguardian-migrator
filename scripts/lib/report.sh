@@ -192,11 +192,12 @@ write_run_result() {
   state_read | "$JQ_BIN" --arg cmd "$PROG ${SG_RUN_ARGS:-}" --arg at "$(state_now)" --argjson took "$((SECONDS - RUN_T0))" \
     --arg org "$ORG" --arg url "$SG_BASE_URL" --argjson dry "$([ "${DRY_RUN:-0}" -eq 1 ] && echo true || echo false)" \
     --arg outcome "$outcome" --argjson scope "$scope" --argjson groups "${PLAN_GROUP_ROWS:-[]}" \
+    --argjson overlay "${TFVARS_OVERLAY_JSON:-{\}}" --arg overlay_desc "$(declare -F overlay_describe >/dev/null && overlay_describe || true)" \
     --argjson problems "$problems" --argjson rows "$rows" --argjson open "${CHECKLIST_OPEN:-0}" '
     . as $st
     | {
       command: $cmd, at: $at, tookSeconds: $took, org: $org, apiUrl: $url, dryRun: $dry, outcome: $outcome,
-      scope: $scope, groups: $groups, problems: $problems,
+      scope: $scope, configuration: {description: $overlay_desc, overlay: $overlay}, groups: $groups, problems: $problems,
       workflows: [ $rows[] | . as $r
         | ($st.import[$r.segment] // {}) as $imp | ($st.triggers[$r.segment] // {}) as $tr
         | . + {
@@ -224,6 +225,7 @@ write_run_result() {
     "- Org: `\(.org)` (\(.apiUrl))", "- Command: `\(.command)`", "- Finished: \(.at) after \(.tookSeconds)s",
     (if .dryRun then "- Dry run: nothing was created or changed in StackGuardian" else empty end),
     (if (.scope | [.[]] | add | length) > 0 then "- Scope: \(.scope | to_entries | map(select(.value | length > 0) | "\(.key) \(.value | join(", "))") | join("; "))" else empty end),
+    (if (.configuration.description // "") != "" then "- Run configuration: \(.configuration.description)" else empty end),
     "",
     "| Workflow | Group | Plan | Result | Terraform | State | Triggers |", "|---|---|---|---|---|---|---|",
     (.workflows[] | "| \(.name) | \(.group) | \(.plan) | \(.result) | \(.terraformVersion)\(if .tfFallback then " (fallback)" else "" end) | \(.state // "-") | \(.triggers // "-") |"),

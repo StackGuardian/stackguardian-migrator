@@ -131,8 +131,14 @@ ws_jq_args() { WS_JQ_ARGS=(--argjson inc "$(ws_filter_json)" --argjson exc "$(ws
 # CLI scope to terraform apply (nothing when no flag is set).
 SCOPE_TFVAR_ARGS=()
 scope_tfvar_args() {
+  local k
   SCOPE_TFVAR_ARGS=()
   _scope_jq
+  # The configuration overlay first (merged values, see overlay_build); a
+  # scope flag on the same variable wins because terraform takes the last -var.
+  while IFS= read -r k; do
+    [ -n "$k" ] && SCOPE_TFVAR_ARGS+=(-var "$k=$(tfvars_get_json ".$k")")
+  done < <(printf '%s' "${TFVARS_OVERLAY_JSON:-{\}}" | "$JQ_BIN" -r 'keys[]')
   [ "${#PROJECT_FILTER[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "tfProjects=$(names_json "${PROJECT_FILTER[@]}")")
   [ "${#WS_FILTER[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "workspacenames=$(names_json "${WS_FILTER[@]}")")
   [ "${#WS_EXCLUDE[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "tfWorkspaceIgnoreNames=$(ws_exclude_json)")
@@ -154,4 +160,142 @@ scope_describe() {
 
 # scope_sha_input — the CLI scope as a string for the apply phase hash, so a
 # run with a different selection re-runs the export.
-scope_sha_input() { printf '%s|%s|%s|%s|%s' "${PROJECT_FILTER[*]-}" "$(ws_filter_json)" "$(ws_exclude_json)" "$(scope_tags_json)" "$(scope_ignore_tags_json)"; }
+scope_sha_input() { printf '%s|%s|%s|%s|%s|%s' "${PROJECT_FILTER[*]-}" "$(ws_filter_json)" "$(ws_exclude_json)" "$(scope_tags_json)" "$(scope_ignore_tags_json)" "${TFVARS_OVERLAY_JSON:-}"; }
+
+# --- run configuration overlay ------------------------------------------------
+# Connector and setting flags apply to one run on top of terraform.tfvars:
+#   --set KEY=VALUE             any transformer variable (HCL/JSON value; bare text = string)
+#   --cloud-connector ID        DeploymentPlatformConfig; the kind is looked up in SG
+#   --vcs-connector ID          vcsAuthIntegrationID + sourceConfigDestKind (looked up) + repo prefix
+#   --runner-group NAME|shared  RunnerConstraints
+#   --workflow-group NAME       the project's workflow group (needs --project)
+# With --project the connector flags become that project's projectOverrides
+# entry, so every workspace of the project inherits them; without it they set
+# the SGDefault* values. tfvars_json returns the file merged with
+# TFVARS_OVERLAY_JSON, so preflight, the plan, enrich and the import see the
+# same values, and apply receives them as -var. Nothing is written to the
+# tfvars: a later run without the flags PATCHes the workflows back to it.
+SET_VARS=()
+CLOUD_CONNECTOR=""
+VCS_CONNECTOR=""
+RUNNER_GROUP=""
+WORKFLOW_GROUP=""
+TFVARS_OVERLAY_JSON='{}'
+
+overlay_requested() { [ "${#SET_VARS[@]}" -gt 0 ] || [ -n "$CLOUD_CONNECTOR$VCS_CONNECTOR$RUNNER_GROUP$WORKFLOW_GROUP" ]; }
+
+# _overlay_value <text> — a --set value as JSON. Literals ([..], {..}, "..",
+# true/false/null, numbers) go through hcl2json; anything else is a string, so
+# /integrations/x or aws-prod never turn into HCL expressions.
+_overlay_value() {
+  case "$1" in
+  \[* | \{* | \"* | true | false | null)
+    printf 'x = %s\n' "$1" | "$(sg_resolve hcl2json sg_ensure_hcl2json)" 2>/dev/null | "$JQ_BIN" -c '.x'
+    return
+    ;;
+  esac
+  case "$1" in
+  '' | *[!0-9.-]*) "$JQ_BIN" -cn --arg v "$1" '$v' ;;
+  *) printf '%s' "$1" ;;
+  esac
+}
+
+# _overlay_project_name <value> — the raw TFC project name for a --project
+# value (name or slug), via the TFC API: projectOverrides is keyed by the
+# name. A value matching no project is fatal; when TFC cannot be reached the
+# value is used as given, with a warning (fine when it is the exact name).
+_overlay_project_name() {
+  local slug hit
+  _scope_jq
+  slug="$(slug_of "$1")"
+  if [ -z "${_OVERLAY_PROJECTS+x}" ]; then
+    _OVERLAY_PROJECTS="$(tfc_list_projects "$(tfvars_get .tfOrg)" 2>/dev/null)" || _OVERLAY_PROJECTS=""
+  fi
+  if [ -z "$_OVERLAY_PROJECTS" ]; then
+    sg_warn "could not list the TFC projects to resolve --project '$1' — using it as the project name"
+    printf '%s' "$1"
+    return
+  fi
+  hit="$(printf '%s' "$_OVERLAY_PROJECTS" | "$JQ_BIN" -r --arg s "$slug" '[.[] | select((.name | ascii_downcase | gsub("[^a-z0-9-]+"; "-")) == $s) | .name] | first // empty')"
+  [ -n "$hit" ] || die "--project '$1' matches no TFC project in '$(tfvars_get .tfOrg)' (projects: $(printf '%s' "$_OVERLAY_PROJECTS" | "$JQ_BIN" -r '[.[].name] | join(", ")'))"
+  printf '%s' "$hit"
+}
+
+# overlay_build — turn the flags into TFVARS_OVERLAY_JSON (dies on a bad flag).
+# Needs ORG/SG_API_TOKEN for the connector lookups and TFC auth to resolve a
+# project slug (falls back to the value as given).
+overlay_build() {
+  overlay_requested || return 0
+  _scope_jq
+  local o='{}' kv k v ints ctype kind fields='{}' p name rc
+  for kv in ${SET_VARS[@]+"${SET_VARS[@]}"}; do
+    k="${kv%%=*}"
+    v="${kv#*=}"
+    { [ "$k" != "$kv" ] && [ -n "$k" ]; } || die "--set expects KEY=VALUE, got '$kv'"
+    tfvars_variable_names | grep -qx -- "$k" || die "--set: '$k' is not a setting of the transformer (see transformer/terraform-cloud/variables.tf)"
+    v="$(_overlay_value "$v")"
+    [ -n "$v" ] || die "--set $k: the value is not valid HCL/JSON"
+    o="$("$JQ_BIN" -c --arg k "$k" --argjson v "$v" '.[$k] = $v' <<<"$o")"
+  done
+  if [ -n "$CLOUD_CONNECTOR$VCS_CONNECTOR" ]; then
+    { [ -n "${SG_API_TOKEN:-}" ] && [ -n "${ORG:-}" ]; } || die "--cloud-connector / --vcs-connector need SG_API_TOKEN and SG_ORG (the connector kind is looked up in the org)"
+    ints="$(sg_list_integrations)" || die "could not list the connectors of org '$ORG' (HTTP ${SG_HTTP_CODE:-?}) — check SG_API_TOKEN"
+  fi
+  if [ -n "$CLOUD_CONNECTOR" ]; then
+    ctype="$(sg_integration_type "$ints" "$CLOUD_CONNECTOR")"
+    [ -n "$ctype" ] || die "cloud connector '$CLOUD_CONNECTOR' not found in org '$ORG' (available: $(printf '%s' "$ints" | "$JQ_BIN" -r '[.[] | select(.type | test("^(AWS|AZURE|GCP)_")) | .name] | join(", ")'))"
+    case "$ctype" in AWS_* | AZURE_* | GCP_*) ;; *) die "'$CLOUD_CONNECTOR' is a $ctype connector, not a cloud connector" ;; esac
+    fields="$("$JQ_BIN" -c --arg k "$ctype" --arg i "/integrations/${CLOUD_CONNECTOR#/integrations/}" '.DeploymentPlatformConfig = [{kind: $k, config: {integrationId: $i}}]' <<<"$fields")"
+    OVERLAY_CLOUD_KIND="$ctype"
+  fi
+  if [ -n "$VCS_CONNECTOR" ]; then
+    ctype="$(sg_integration_type "$ints" "$VCS_CONNECTOR")"
+    [ -n "$ctype" ] || die "VCS connector '$VCS_CONNECTOR' not found in org '$ORG' (available: $(printf '%s' "$ints" | "$JQ_BIN" -r '[.[] | select(.type | test("^(AWS|AZURE|GCP)_") | not) | .name] | join(", ")'))"
+    kind="$(sg_vcs_kind_of "$ctype")"
+    [ -n "$kind" ] || die "'$VCS_CONNECTOR' is a $ctype connector; the migrator cannot map that to a VCS kind — pass --set SGDefaultSourceConfigDestKind=<GITHUB_COM|GITLAB_COM|BITBUCKET_ORG|AZURE_DEVOPS|GIT_OTHER> as well"
+    fields="$("$JQ_BIN" -c --arg i "/integrations/${VCS_CONNECTOR#/integrations/}" --arg k "$kind" '.vcsAuthIntegrationID = $i | .sourceConfigDestKind = $k' <<<"$fields")"
+    # A different provider than the tfvars default needs its own repo prefix.
+    if [ "$kind" != "$(tfvars_get .SGDefaultSourceConfigDestKind)" ]; then
+      fields="$("$JQ_BIN" -c --arg p "$(_w_repo_prefix_for "$kind")" '.vcsRepoPrefix = $p' <<<"$fields")"
+    fi
+    OVERLAY_VCS_KIND="$kind"
+  fi
+  if [ -n "$RUNNER_GROUP" ]; then
+    if [ "$RUNNER_GROUP" = "shared" ]; then rc='{"type":"shared"}'; else rc="$("$JQ_BIN" -cn --arg n "$RUNNER_GROUP" '{type: "private", names: [$n]}')"; fi
+    fields="$("$JQ_BIN" -c --argjson r "$rc" '.RunnerConstraints = $r' <<<"$fields")"
+  fi
+  if [ -n "$WORKFLOW_GROUP" ]; then
+    [ "${#PROJECT_FILTER[@]}" -gt 0 ] || die "--workflow-group needs --project: a workflow group belongs to a TFC project"
+    fields="$("$JQ_BIN" -c --arg g "$WORKFLOW_GROUP" '.workflowGroup = $g' <<<"$fields")"
+  fi
+  if [ "$fields" != "{}" ]; then
+    if [ "${#PROJECT_FILTER[@]}" -gt 0 ]; then
+      for p in "${PROJECT_FILTER[@]}"; do
+        name="$(_overlay_project_name "$p")"
+        o="$("$JQ_BIN" -c --arg n "$name" --argjson f "$fields" '.projectOverrides[$n] = ((.projectOverrides[$n] // {}) + $f)' <<<"$o")"
+      done
+    else
+      o="$("$JQ_BIN" -c --argjson f "$fields" '. + ($f | with_entries(.key |= ({
+        DeploymentPlatformConfig: "SGDefaultDeploymentPlatformConfig", vcsAuthIntegrationID: "SGDefaultVCSAuthIntegrationID",
+        sourceConfigDestKind: "SGDefaultSourceConfigDestKind", vcsRepoPrefix: "SGDefaultIACVCSRepoPrefix",
+        RunnerConstraints: "SGDefaultRunnerConstraints"}[.])))' <<<"$o")"
+    fi
+  fi
+  TFVARS_OVERLAY_JSON="$o"
+  tfvars_invalidate
+  sg_log "run configuration: $(overlay_describe)"
+}
+
+# overlay_describe — one line for the log and the run result.
+overlay_describe() {
+  local out="" kv
+  [ -n "$CLOUD_CONNECTOR" ] && out="cloud connector ${CLOUD_CONNECTOR#/integrations/} (${OVERLAY_CLOUD_KIND:-?})"
+  [ -n "$VCS_CONNECTOR" ] && out="${out:+$out, }VCS connector ${VCS_CONNECTOR#/integrations/} (${OVERLAY_VCS_KIND:-?})"
+  [ -n "$RUNNER_GROUP" ] && out="${out:+$out, }runners $RUNNER_GROUP"
+  [ -n "$WORKFLOW_GROUP" ] && out="${out:+$out, }workflow group $WORKFLOW_GROUP"
+  if [ -n "$out" ]; then
+    if [ "${#PROJECT_FILTER[@]}" -gt 0 ]; then out="$out for project(s) ${PROJECT_FILTER[*]}"; else out="$out as the defaults"; fi
+  fi
+  for kv in ${SET_VARS[@]+"${SET_VARS[@]}"}; do out="${out:+$out, }$kv"; done
+  printf '%s' "$out"
+}

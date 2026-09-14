@@ -54,6 +54,9 @@ SG_BASE_URL="${SG_BASE_URL:-https://api.app.stackguardian.io}"
 ASSUME_YES=0
 PURGE=0
 UPGRADE=0
+# Set once the export ran (or was found up to date) in this process: the run
+# configuration flags reach the workflows through the payload the export writes.
+RAN_APPLY=0
 CREATE_GROUPS=1
 ENRICH_VARSETS=1
 VCS_TRIGGERS=1
@@ -146,6 +149,15 @@ Options:
   --exclude-tag NAME Leave workspaces carrying the tag out (repeatable; adds to tfWorkspaceIgnoreTags)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
   --upgrade          With 'init': append missing settings to an existing terraform.tfvars
+
+Run configuration (on top of terraform.tfvars, for this run only; with --project
+they apply to that project's workflows, otherwise as the defaults):
+  --cloud-connector ID   Cloud connector (/integrations/<name>); its kind is looked up in SG
+  --vcs-connector ID     VCS connector; kind and repo URL prefix follow the connector
+  --runner-group NAME    Private runner group for the workflows ("shared" = SG runners)
+  --workflow-group NAME  Workflow group for the project's workflows (needs --project)
+  --set KEY=VALUE        Any transformer variable, e.g. --set SGDefaultTerraformVersion=null
+                         (repeatable; HCL/JSON value, bare text is a string)
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
   -h, --help         Show this help
@@ -603,6 +615,7 @@ tf_apply() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 
 
 cmd_apply() {
   phase_begin "apply (terraform)"
+  RAN_APPLY=1
   command -v terraform >/dev/null 2>&1 || die "terraform not found on PATH"
   [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init"
   # terraform auto-loads terraform.tfvars from the module dir on top of -var-file.
@@ -1001,6 +1014,9 @@ cmd_import() {
   export SG_API_TOKEN SG_BASE_URL
   JQ_BIN="$(sg_resolve jq sg_ensure_jq)"
   preflight_run import
+  if overlay_requested && [ "$RAN_APPLY" -ne 1 ]; then
+    sg_warn "the run configuration flags shape the export and were not applied to the existing payload files — run '$PROG all' (or 'apply', then 'import') for them to reach the workflows"
+  fi
 
   payload_files
   [ "${#PF[@]}" -gt 0 ] || die "No payload files in $(sg_rel "$EXPORT_DIR")."
@@ -1120,7 +1136,7 @@ finish_line() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
-SG_OPTIONS="--org --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1144,7 +1160,7 @@ _sg_migrate() {
   case "\$prev" in
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
     --mapping | --tfvars) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
-    --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag) COMPREPLY=(); return ;;
+    --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag | --set | --cloud-connector | --vcs-connector | --runner-group | --workflow-group) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
   for w in "\${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
@@ -1204,6 +1220,11 @@ _sg_migrate() {
     '*--exclude-tag[Leave workspaces carrying this tag out]:tag' \\
     '--all[With clean: also remove config]' \\
     '--upgrade[With init: append missing settings to terraform.tfvars]' \\
+    '*--set[Transformer variable for this run (KEY=VALUE)]:setting' \\
+    '--cloud-connector[Cloud connector for this run (kind looked up in SG)]:id' \\
+    '--vcs-connector[VCS connector for this run (kind looked up in SG)]:id' \\
+    '--runner-group[Private runner group for this run (shared = SG runners)]:name' \\
+    '--workflow-group[Workflow group for the --project workflows]:name' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
     '(-h --help)'{-h,--help}'[Show help]' \\
@@ -1294,6 +1315,31 @@ main() {
     -v | --verbose) VERBOSE=1 ;;
     --all) PURGE=1 ;;
     --upgrade) UPGRADE=1 ;;
+    --set)
+      SET_VARS+=("$2")
+      shift
+      ;;
+    --set=*) SET_VARS+=("${1#*=}") ;;
+    --cloud-connector)
+      CLOUD_CONNECTOR="$2"
+      shift
+      ;;
+    --cloud-connector=*) CLOUD_CONNECTOR="${1#*=}" ;;
+    --vcs-connector)
+      VCS_CONNECTOR="$2"
+      shift
+      ;;
+    --vcs-connector=*) VCS_CONNECTOR="${1#*=}" ;;
+    --runner-group)
+      RUNNER_GROUP="$2"
+      shift
+      ;;
+    --runner-group=*) RUNNER_GROUP="${1#*=}" ;;
+    --workflow-group)
+      WORKFLOW_GROUP="$2"
+      shift
+      ;;
+    --workflow-group=*) WORKFLOW_GROUP="${1#*=}" ;;
     -h | --help)
       usage
       exit 0
@@ -1322,6 +1368,17 @@ main() {
     exit 0
   fi
   export SG_VERBOSE="$VERBOSE"
+
+  # The run configuration flags (lib/scope.sh) shape a run, not the file.
+  case "$CMD" in
+  init | clean | completion)
+    overlay_requested && die "--set / --cloud-connector / --vcs-connector / --runner-group / --workflow-group apply to a run (apply, import, all), not to '$CMD' — edit $(sg_rel "$TFVARS") instead"
+    ;;
+  *)
+    export SG_API_TOKEN SG_BASE_URL
+    overlay_build
+    ;;
+  esac
 
   case "$CMD" in
   init) cmd_init standalone ;;
@@ -1363,6 +1420,7 @@ main() {
     if [ "$ENRICH_VARSETS" -eq 1 ]; then run_phase enrich "$apply_sha" cmd_enrich; fi
     run_phase convert "$(payload_sha)" cmd_convert
     run_phase validate "$(payload_sha)" cmd_validate
+    RAN_APPLY=1 # the export ran, or its inputs (flags included) were unchanged
     cmd_import
     ;;
   esac
