@@ -33,6 +33,7 @@ ignoreVarPatterns = ["^TFC_", "^TFE_"]
 # connector and are not migrated; which family is stripped follows each
 # workflow's DeploymentPlatformConfig kind. Set false to keep them.
 stripCloudAuthVars = true
+
 # The patterns per family (AWS / AZURE / GCP). Setting this replaces the whole
 # map; the defaults are listed in variables.tf.
 # cloudAuthVarPatterns = {
