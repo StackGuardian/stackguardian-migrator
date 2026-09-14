@@ -108,8 +108,8 @@ _cl_block() { if [ -n "$1" ]; then printf '%s\n\n' "$1"; else printf -- '- None.
 # links; the terminal gets one status line per section). Sets CHECKLIST_OPEN.
 write_checklist() {
   local out="$EXPORT_DIR/post-import-checklist.md" summary="$EXPORT_DIR/migration-summary.json" st
-  local i_secrets i_unstubbed="" i_failed i_fallback="" i_unpinned="" i_preset="" i_trig i_state="" i_nonremote="" i_renamed=""
-  local n_secrets n_unstubbed n_failed n_fallback n_unpinned n_preset n_trig n_state n_nonremote n_renamed
+  local i_secrets i_unstubbed="" i_failed i_fallback="" i_unpinned="" i_preset="" i_trig i_state="" i_stfail i_nonremote="" i_renamed=""
+  local n_secrets n_unstubbed n_failed n_fallback n_unpinned n_preset n_trig n_state n_stfail n_stok n_nonremote n_renamed
   local f seg grp n total=0 gw preset_desc=""
   local -a glines=()
   st="$(state_read)"
@@ -133,9 +133,12 @@ write_checklist() {
   [ -s "$EXPORT_DIR/terraform-version-fallbacks.log" ] && i_fallback="$(sed 's/^/- [ ] /' "$EXPORT_DIR/terraform-version-fallbacks.log")"
   i_trig="$(printf '%s' "$st" | "$JQ_BIN" -r '.triggers // {} | to_entries[] | .value.group as $g | (.value.failed[]? | "- [ ] `\($g)/\(.)` — trigger registration failed; check the connector has admin/webhook rights on the repository, then re-run `./sg-migrate.sh triggers`"), (.value.missing[]? | "- [ ] `\($g)/\(.)` — workflow was not imported, so no trigger was registered")')"
   [ -s "$EXPORT_DIR/state-export-failures.log" ] && i_state="$(sed 's/^/- [ ] /' "$EXPORT_DIR/state-export-failures.log")"
+  # State that was exported but did not land in SG (upload failed on import).
+  i_stfail="$(printf '%s' "$st" | "$JQ_BIN" -r --arg ui "$SG_UI_URL" --arg org "$ORG" '.import // {} | to_entries[] | .value.group as $g | .value.state_failed[]? | "- [ ] [`\($g)/\(.)`](\($ui)/orchestrator/orgs/\($org)/wfgrps/\($g)/wfs/\(.)) — created without its Terraform state; re-run `./sg-migrate.sh import` or upload `export/states/<workspace>.tfstate` by hand (Workflow → Settings → State)"')"
+  n_stok="$(printf '%s' "$st" | "$JQ_BIN" -r '[.import // {} | .[] | .state_uploaded[]?] | length')"
   n_secrets="$(_cl_count "$i_secrets")"; n_unstubbed="$(_cl_count "$i_unstubbed")"; n_failed="$(_cl_count "$i_failed")"
   n_fallback="$(_cl_count "$i_fallback")"; n_unpinned="$(_cl_count "$i_unpinned")"; n_preset="$(_cl_count "$i_preset")"; n_trig="$(_cl_count "$i_trig")"
-  n_state="$(_cl_count "$i_state")"; n_nonremote="$(_cl_count "$i_nonremote")"; n_renamed="$(_cl_count "$i_renamed")"
+  n_state="$(_cl_count "$i_state")"; n_stfail="$(_cl_count "$i_stfail")"; n_nonremote="$(_cl_count "$i_nonremote")"; n_renamed="$(_cl_count "$i_renamed")"
 
   # --- the file -----------------------------------------------------------------
   {
@@ -157,6 +160,11 @@ write_checklist() {
       printf 'State could not be pulled from TFC for these workspaces; upload it manually (Workflow → Settings → State) or run an import in the new workflow.\n\n%s\n\n' "$i_state"
     else
       printf -- '- All selected workspaces had their state exported.\n\n'
+    fi
+    if [ -n "$i_stfail" ]; then
+      printf 'These workflows exist in StackGuardian but their state upload failed, so a run would start from an empty state:\n\n%s\n\n' "$i_stfail"
+    else
+      printf -- '- State uploaded to StackGuardian for %s workflow(s).\n\n' "$n_stok"
     fi
     [ -n "$i_nonremote" ] && printf '%s\n\n' "$i_nonremote"
     if [ -n "$i_renamed" ]; then
@@ -191,9 +199,11 @@ write_checklist() {
   _cl_status "$n_trig" "VCS triggers: registered for every workflow that had them" "VCS triggers: $n_trig workflow(s) without triggers — see the checklist, then '$PROG triggers'"
   _cl_status "$((n_state + n_nonremote))" "state: exported for every selected workspace" \
     "state: $n_state workspace(s) without exported state${i_nonremote:+, $n_nonremote with non-remote execution} — upload by hand"
+  _cl_status "$n_stfail" "state: uploaded to SG for $n_stok workflow(s)" \
+    "state: $n_stfail workflow(s) are in SG without their state (upload failed) — re-run '$PROG import' or upload by hand"
   [ "$n_renamed" -gt 0 ] && _cl_status "$n_renamed" "" "names: $n_renamed workflow(s) were renamed to valid SG names"
   # shellcheck disable=SC2034
-  CHECKLIST_OPEN=$((n_secrets + n_unstubbed + n_failed + n_fallback + n_unpinned + n_preset + n_trig + n_state + n_nonremote))
+  CHECKLIST_OPEN=$((n_secrets + n_unstubbed + n_failed + n_fallback + n_unpinned + n_preset + n_trig + n_state + n_stfail + n_nonremote))
   sg_dim "full checklist with links: $(sg_rel "$out")"
 }
 

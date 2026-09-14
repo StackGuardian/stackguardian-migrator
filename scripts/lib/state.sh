@@ -9,7 +9,9 @@
 #
 # Layout: { "phases": { "<phase>": {"at": iso, "input_sha": sha} },
 #           "import":  { "<seg>":   {"at": iso, "payload_sha": sha, "group": g,
-#                                    "imported": [...], "failed": [...]} } }
+#                                    "imported": [...], "failed": [...],
+#                                    "tf_fallback": [...],
+#                                    "state_uploaded": [...], "state_failed": [...]} } }
 
 STATE_FILE="${SG_STATE_FILE:-$SG_REPO_ROOT/.sg/state.json}"
 
@@ -52,14 +54,15 @@ state_phase_done() {
 state_mark_phase() { state_update '.phases[$p] = {at: $at, input_sha: $s}' --arg p "$1" --arg s "$2" --arg at "$(state_now)"; }
 
 # state_import_done <seg> <payload-sha> — exit 0 when this payload file was
-# fully imported (no failures) with exactly this content.
+# fully imported (no failed workflows, no missing state) with exactly this content.
 state_import_done() {
   state_read | "$(sg_resolve jq sg_ensure_jq)" -e --arg s "$1" --arg sha "$2" \
-    '.import[$s] | select(.payload_sha == $sha and ((.failed // []) | length) == 0)' >/dev/null 2>&1
+    '.import[$s] | select(.payload_sha == $sha and ((.failed // []) | length) == 0 and ((.state_failed // []) | length) == 0)' >/dev/null 2>&1
 }
 
 # state_record_import <seg> <result-json> — merge a do_import result
-# ({group, payload_sha, imported, failed}) for a payload file.
+# ({group, payload_sha, imported, failed, tf_fallback, state_uploaded,
+# state_failed}) for a payload file.
 state_record_import() { state_update '.import[$s] = ($r + {at: $at})' --arg s "$1" --argjson r "$2" --arg at "$(state_now)"; }
 
 state_reset() { rm -f "$STATE_FILE"; }

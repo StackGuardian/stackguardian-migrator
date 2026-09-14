@@ -127,14 +127,32 @@ sg_create_workflow() {
   return "$rc"
 }
 
-# sg_upload_tfstate <group> <wf> <file> — the state upload sg-cli does after a
-# bulk create: fetch the presigned URL, PUT the file. 0 on success.
+# sg_upload_tfstate <group> <wf> <file> — upload a workflow's Terraform state:
+# fetch the presigned URL, PUT the file. 0 on a 2xx from the store; otherwise
+# prints a one-line reason (for the log) and returns 1. The store behind the
+# URL differs per environment: Azure Blob requires x-ms-blob-type on every PUT
+# (S3/GCS ignore it) and answers 201, not 200.
+# TODO(sg-cli): sg-cli's own upload (uploadTfState) sends no x-ms-blob-type and
+# only accepts a literal "HTTP/1.1 200 OK", so the migrator re-uploads whatever
+# sg-cli reports as failed (import_bulk) — drop that once sg-cli is fixed.
 sg_upload_tfstate() {
-  local url code
-  url="$(sg_api_get "$(wf_url "$1" "$2")tfstate_upload_url" | "$(sg_resolve jq sg_ensure_jq)" -r '.msg // empty')" || return 1
-  [ -n "$url" ] || return 1
-  code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT -H "Content-Type: application/json" -T "$3" "$url" 2>/dev/null)" || true
-  case "$(sg_norm_code "$code")" in 2*) return 0 ;; *) return 1 ;; esac
+  local url code body
+  body="$(sg_api_get "$(wf_url "$1" "$2")tfstate_upload_url" 2>/dev/null)" || {
+    printf 'no upload URL (HTTP %s)' "$SG_HTTP_CODE"
+    return 1
+  }
+  url="$(printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -r '.msg // empty' 2>/dev/null)"
+  [ -n "$url" ] || {
+    printf 'no upload URL in the API response'
+    return 1
+  }
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+    -H "Content-Type: application/json" -H "x-ms-blob-type: BlockBlob" \
+    -T "$3" "$url" 2>/dev/null)" || true
+  code="$(sg_norm_code "$code")"
+  case "$code" in 2*) return 0 ;; esac
+  printf 'store answered HTTP %s' "$code"
+  return 1
 }
 
 # --- execution preset (org workflow defaults) ------------------------------

@@ -527,43 +527,92 @@ sgcli_bulk() {
   return "${PIPESTATUS[0]}"
 }
 
+# state_path_of <file> <wf> — the payload entry's TfStateFilePath ("" if none).
+state_path_of() { "$JQ_BIN" -r --arg n "$2" '.[] | select(.ResourceName == $n) | .CLIConfiguration.TfStateFilePath // empty' "$1"; }
+
+# upload_state <group> <wf> <file> <out> — upload the workflow's state file
+# ourselves and append a "[state] uploaded|failed|none <wf>[: why]" marker to
+# <out> for do_import. Returns 1 only when the workflow has a state file that
+# did not land.
+upload_state() {
+  local grp="$1" name="$2" file="$3" out="$4" path why
+  path="$(state_path_of "$file" "$name")"
+  if [ -z "$path" ]; then
+    printf '[state] none %s\n' "$name" >>"$out"
+    return 0
+  fi
+  if [ ! -f "$path" ]; then
+    sg_warn "  $name: state file missing: $(sg_rel "$path")"
+    printf '[state] failed %s: state file missing (%s)\n' "$name" "$path" >>"$out"
+    return 1
+  fi
+  if why="$(sg_upload_tfstate "$grp" "$name" "$path")"; then
+    sg_log "  $name: state file uploaded"
+    printf '[state] uploaded %s\n' "$name" >>"$out"
+    return 0
+  fi
+  sg_warn "  $name: state file upload failed — $why"
+  printf '[state] failed %s: %s\n' "$name" "$why" >>"$out"
+  return 1
+}
+
 # import_bulk <group> <file> <out> — import one payload file: sg-cli for the
 # workflows that have Terraform variables, a direct API POST for the ones
 # without — sg-cli drops an empty iacInputData.data and the API then rejects
 # the workflow. TODO(sg-cli): workaround; remove the split once sg-cli ships
 # with sg-sdk-go >= v1.5.7 (see sg_create_workflow). The direct path writes
 # the same "Failed to create <name>: <code>: <body>" lines sg-cli prints, so
-# do_import parses both alike. Like sg-cli, exits 0 even when individual
-# workflows were rejected — do_import reads those from <out>; non-zero only
-# when a call itself could not be made.
+# do_import parses both alike.
+#
+# State files are the migrator's responsibility on both paths: whatever
+# sg-cli reports as a failed upload is uploaded again by upload_state, and
+# every workflow ends up with a "[state] ..." marker in <out>.
+#
+# Like sg-cli, exits 0 even when individual workflows were rejected —
+# do_import reads those from <out>; non-zero only when a call itself could
+# not be made.
 import_bulk() {
-  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err state
+  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err line cur="" cli_out
+  local -a redo=()
   : >"$out"
   n_direct="$("$JQ_BIN" '[.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)] | length' "$file")"
-  if [ "$n_direct" -eq 0 ]; then
-    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$file" "$out"
-    return
+  with_vars="$file"
+  if [ "$n_direct" -gt 0 ]; then
+    with_vars="$(mktemp)"
+    "$JQ_BIN" 'map(select((.VCSConfig.iacInputData.data // {}) | length > 0))' "$file" >"$with_vars"
   fi
-  with_vars="$(mktemp)"
-  "$JQ_BIN" 'map(select((.VCSConfig.iacInputData.data // {}) | length > 0))' "$file" >"$with_vars"
   if [ "$("$JQ_BIN" length "$with_vars")" -gt 0 ]; then
-    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$with_vars" "$out" || rc=1
+    cli_out="$(mktemp)"
+    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$with_vars" "$cli_out" || rc=1
+    cat "$cli_out" >>"$out"
+    # sg-cli's own state upload, per workflow: trust its success, redo its
+    # failures (it sends no x-ms-blob-type, and misreads anything but a
+    # literal "HTTP/1.1 200 OK" as a failure).
+    while IFS= read -r line; do
+      case "$line" in
+      *"Processing workflow: "*) cur="${line##*Processing workflow: }" ;;
+      *"Failed to create "*) cur="" ;;
+      *"State file uploaded successfully"*) [ -n "$cur" ] && printf '[state] uploaded %s\n' "$cur" >>"$out" ;;
+      *"Failed to upload state file for "*) name="${line##*Failed to upload state file for }"; redo+=("${name%%:*}") ;;
+      *"cannot access state file"*) [ -n "$cur" ] && redo+=("$cur") ;;
+      *"TfStateFilePath not provided for "*) name="${line##*TfStateFilePath not provided for }"; printf '[state] none %s\n' "${name%%:*}" >>"$out" ;;
+      esac
+    done <"$cli_out"
+    rm -f "$cli_out"
+    if [ "${#redo[@]}" -gt 0 ]; then
+      sg_log "${#redo[@]} state upload(s) reported failed by sg-cli — uploading them directly"
+      for name in "${redo[@]}"; do upload_state "$grp" "$name" "$file" "$out" || true; done
+    fi
   fi
-  rm -f "$with_vars"
+  [ "$with_vars" != "$file" ] && rm -f "$with_vars"
+  [ "$n_direct" -gt 0 ] || return "$rc"
+
   sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
   while IFS= read -r entry; do
     name="$("$JQ_BIN" -r '.ResourceName' <<<"$entry")"
     if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_create_workflow "$grp" "$entry" 2>/dev/null)"; then
-      state="$("$JQ_BIN" -r '.CLIConfiguration.TfStateFilePath // empty' <<<"$entry")"
-      if [ -z "$state" ]; then
-        sg_log "  $name: created (no state file to upload)"
-      elif [ ! -f "$state" ]; then
-        sg_warn "  $name: created, but the state file is missing: $(sg_rel "$state")"
-      elif sg_upload_tfstate "$grp" "$name" "$state"; then
-        sg_log "  $name: created, state file uploaded"
-      else
-        sg_warn "  $name: created, but the state file upload failed ($(sg_rel "$state"))"
-      fi
+      sg_log "  $name: created"
+      upload_state "$grp" "$name" "$file" "$out" || true
     else
       # Same shape as sg-cli's failure line (parsed by do_import).
       printf 'Failed to create %s: %s\n' "$name" "$(tail -n1 <<<"$err")" | tee -a "$out"
@@ -586,7 +635,7 @@ names_json() { printf '%s\n' "$@" | "$JQ_BIN" -R . | "$JQ_BIN" -s .; }
 # the trigger pass see what was actually imported); each fallback is appended to
 # terraform-version-fallbacks.log. Any other per-workflow failure fails the file.
 do_import() {
-  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() name line tmp names work all_names patch
+  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() st_ok=() st_failed=() name line tmp names work all_names patch
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   # With --workspace, import only the selected workflows (a filtered copy).
@@ -614,6 +663,10 @@ do_import() {
       explain_api_error "${BASH_REMATCH[2]}"
     elif [[ "$line" =~ Failed\ to\ create\ ([^:]+): ]]; then
       failed+=("${BASH_REMATCH[1]}")
+    elif [[ "$line" =~ ^\[state\]\ uploaded\ (.+)$ ]]; then
+      st_ok+=("${BASH_REMATCH[1]}")
+    elif [[ "$line" =~ ^\[state\]\ failed\ ([^:]+): ]]; then
+      st_failed+=("${BASH_REMATCH[1]}")
     fi
   done <"$out"
   rm -f "$out"
@@ -645,6 +698,8 @@ do_import() {
       else
         line="$("$JQ_BIN" -r --arg n "$name" '.[] | select(.ResourceName == $n) | .TerraformConfig.terraformVersion' "$f")"
         printf '%s/%s: %s -> %s (above SG managed ceiling %s)\n' "$grp" "$name" "$line" "${SG_DEFAULT_TF_VERSION:-execution preset}" "$ceiling" >>"$EXPORT_DIR/terraform-version-fallbacks.log"
+        grep -q "^\[state\] uploaded $name\$" "$out" && st_ok+=("$name")
+        grep -q "^\[state\] failed $name:" "$out" && st_failed+=("$name")
       fi
     done
     rm -f "$out"
@@ -659,11 +714,18 @@ do_import() {
   "$JQ_BIN" -nc --arg g "$grp" --arg sha "$(sg_sha_files "$f")" --argjson all "$all_names" \
     --argjson failed "$([ "${#failed[@]}" -gt 0 ] && names_json "${failed[@]}" || echo '[]')" \
     --argjson fallback "$([ "${#fb[@]}" -gt 0 ] && names_json "${fb[@]}" || echo '[]')" \
-    '{group: $g, payload_sha: $sha, imported: ($all - $failed), failed: $failed, tf_fallback: ($fallback - $failed)}' \
+    --argjson st_ok "$([ "${#st_ok[@]}" -gt 0 ] && names_json "${st_ok[@]}" || echo '[]')" \
+    --argjson st_failed "$([ "${#st_failed[@]}" -gt 0 ] && names_json "${st_failed[@]}" || echo '[]')" \
+    '{group: $g, payload_sha: $sha, imported: ($all - $failed), failed: $failed, tf_fallback: ($fallback - $failed),
+      state_uploaded: ($st_ok - $failed - $st_failed | unique), state_failed: ($st_failed - $failed | unique)}' \
     >"$EXPORT_DIR/.import-result.$seg.json"
 
   if [ "${#failed[@]}" -gt 0 ]; then
     sg_err "$(basename "$f"): ${#failed[@]} workflow(s) failed to import: ${failed[*]}"
+    return 1
+  fi
+  if [ "${#st_failed[@]}" -gt 0 ]; then
+    sg_err "$(basename "$f"): ${#st_failed[@]} workflow(s) created but without their Terraform state in SG: ${st_failed[*]}"
     return 1
   fi
   return "$rc"
