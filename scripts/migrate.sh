@@ -36,7 +36,15 @@ source "$SCRIPT_DIR/lib/checklist.sh"
 # SCRIPT_DIR holds the sibling scripts; SG_REPO_ROOT (from tools.sh) is the repo
 # root used for all repo-relative paths.
 TRANSFORMER_DIR="$SG_REPO_ROOT/transformer/terraform-cloud"
-TFVARS="${SG_TFVARS:-$TRANSFORMER_DIR/terraform.tfvars}"
+# The tfvars file: terraform.tfvars in the module dir unless --tfvars / SG_TFVARS
+# points elsewhere (CI keeps its copy outside the checkout). abs_path keeps it
+# valid after the cd into the module dir that terraform needs.
+abs_path() {
+  case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$(cd "$(dirname "$1")" 2>/dev/null && pwd || dirname "$1")" "$(basename "$1")" ;; esac
+}
+TFVARS_DEFAULT="$TRANSFORMER_DIR/terraform.tfvars"
+TFVARS="$TFVARS_DEFAULT"
+[ -n "${SG_TFVARS:-}" ] && TFVARS="$(abs_path "$SG_TFVARS")"
 PROG="${SG_PROG:-$0}"
 EXPORT_DIR="${SG_EXPORT_DIR:-$SG_REPO_ROOT/export}"
 MAPPING="${SG_WFGROUP_MAP:-$SG_REPO_ROOT/.sg/workflow-groups.json}"
@@ -110,6 +118,8 @@ in another group the plan stops and says so.
 Options:
   --org NAME         StackGuardian org for import (or set SG_ORG)
   --export-dir DIR   Payload/state output dir (default: ./export)
+  --tfvars FILE      Use this tfvars file instead of transformer/terraform-cloud/terraform.tfvars
+                     (or set SG_TFVARS); the file the transformer, enrich and preflight read
   --mapping FILE     Deprecated: project-segment -> group override map (default: .sg/workflow-groups.json);
                      use projectOverrides.<project>.workflowGroup instead
   --concurrency N    Max parallel jobs for convert/import (default: 4)
@@ -139,6 +149,7 @@ Environment:
   SG_ORG             StackGuardian org (alternative to --org)
   SG_RETRIES         Import retry attempts on failure (default: 4)
   SG_TF_PARALLELISM  terraform apply -parallelism (default: 20)
+  SG_TFVARS          tfvars file to use (same as --tfvars)
   SG_UI_URL          StackGuardian UI base for checklist links (default: https://app.stackguardian.io)
 EOF
 }
@@ -548,7 +559,8 @@ cmd_clean() {
   rm -rf "$SG_CACHE_DIR"
   state_reset
   if [ "$PURGE" -eq 1 ]; then
-    rm -f "$TFVARS" "$MAPPING"
+    # Only the module's own file; a --tfvars / SG_TFVARS file belongs to the user.
+    rm -f "$TFVARS_DEFAULT" "$MAPPING"
     rm -rf "$SG_REPO_ROOT/.sg"
     sg_log "also removed config (terraform.tfvars, workflow-groups.json, .sg)"
   fi
@@ -560,12 +572,16 @@ cmd_clean() {
 # them; the verbose path wraps them in parentheses).
 # shellcheck disable=SC2120  # extra terraform flags (-no-color) come from the quiet path
 tf_init() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform init -input=false "$@"; }
-tf_apply() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file=terraform.tfvars "$@"; }
+tf_apply() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file="$TFVARS" "$@"; }
 
 cmd_apply() {
   phase_begin "apply (terraform)"
   command -v terraform >/dev/null 2>&1 || die "terraform not found on PATH"
   [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init"
+  # terraform auto-loads terraform.tfvars from the module dir on top of -var-file.
+  if [ "$TFVARS" != "$TFVARS_DEFAULT" ] && [ -f "$TFVARS_DEFAULT" ]; then
+    sg_warn "$(sg_rel "$TFVARS_DEFAULT") exists too: terraform loads it first, $(sg_rel "$TFVARS") overrides per variable — remove it if that is not intended"
+  fi
   preflight_run apply
   # State export (TFC API) calls curl + jq from terraform's local-exec; make sure
   # both are on PATH for the apply (jq from cache if not already installed).
@@ -614,7 +630,7 @@ cmd_enrich() {
   local tforg
   tforg="$(tfvars_get '.tfOrg')"
   [ -n "$tforg" ] || die "tfOrg not found in $(sg_rel "$TFVARS")"
-  SG_TFC_HOSTNAME="$(tfc_hostname)" "$SCRIPT_DIR/enrich_variable_sets.sh" "$tforg" "${PF[@]}"
+  TFVARS="$TFVARS" SG_TFC_HOSTNAME="$(tfc_hostname)" "$SCRIPT_DIR/enrich_variable_sets.sh" "$tforg" "${PF[@]}"
 }
 
 do_convert() { "$SCRIPT_DIR/convert_hcl_to_json.sh" "$1"; }
@@ -1063,7 +1079,7 @@ finish_line() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
-SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1086,7 +1102,7 @@ _sg_migrate() {
   opts="$SG_OPTIONS"
   case "\$prev" in
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
-    --mapping) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
+    --mapping | --tfvars) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
     --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
@@ -1130,6 +1146,7 @@ _sg_migrate() {
   _arguments -s \\
     '--org[StackGuardian org for import]:org' \\
     '--export-dir[Payload/state output dir]:dir:_files -/' \\
+    '--tfvars[tfvars file to use instead of terraform.tfvars]:file:_files' \\
     '--mapping[Project-segment -> group override map]:file:_files' \\
     '--concurrency[Max parallel jobs for convert/import]:n' \\
     '--no-create-groups[Require workflow groups to pre-exist]' \\
@@ -1188,6 +1205,11 @@ main() {
       shift
       ;;
     --mapping=*) MAPPING="${1#*=}" ;;
+    --tfvars)
+      TFVARS="$(abs_path "$2")"
+      shift
+      ;;
+    --tfvars=*) TFVARS="$(abs_path "${1#*=}")" ;;
     --concurrency)
       CONC="$2"
       shift

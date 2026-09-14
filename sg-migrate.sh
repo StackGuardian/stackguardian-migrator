@@ -17,16 +17,27 @@ IMAGE="${SG_IMAGE:-stackguardian/migrator:local}"
 CREDS="${TF_CREDENTIALS_FILE:-$HOME/.terraform.d/credentials.tfrc.json}"
 
 # Parse host-only flags (--native/--local, --build); everything else passes through.
+# --tfvars FILE (or SG_TFVARS) is a host path: it is resolved here and handed to
+# migrate.sh as SG_TFVARS, translated to the container's view when running in Docker.
 NATIVE="${SG_NATIVE:-0}"
 BUILD=0
+TFVARS_HOST="${SG_TFVARS:-}"
 ARGS=()
+want_tfvars=0
 for a in "$@"; do
+  if [ "$want_tfvars" -eq 1 ]; then TFVARS_HOST="$a"; want_tfvars=0; continue; fi
   case "$a" in
   --native | --local) NATIVE=1 ;;
   --build) BUILD=1 ;;
+  --tfvars) want_tfvars=1 ;;
+  --tfvars=*) TFVARS_HOST="${a#*=}" ;;
   *) ARGS+=("$a") ;;
   esac
 done
+if [ -n "$TFVARS_HOST" ]; then
+  case "$TFVARS_HOST" in /*) ;; *) TFVARS_HOST="$(cd "$(dirname "$TFVARS_HOST")" 2>/dev/null && pwd || dirname "$TFVARS_HOST")/$(basename "$TFVARS_HOST")" ;; esac
+  export SG_TFVARS="$TFVARS_HOST"
+fi
 
 # Help, 'clean', 'completion' and 'update' only touch the local shell/filesystem
 # (or git) — no container. With no command at all, migrate.sh prints the help menu.
@@ -123,6 +134,18 @@ DOCKER_ARGS=(--rm -i
 # Interactive TTY only when attached to one (so the confirmation prompt works,
 # but CI/non-tty invocations still run — use -y there).
 if [ -t 0 ] && [ -t 1 ]; then DOCKER_ARGS+=(-t); fi
+
+# A tfvars file inside the checkout is visible under /app; one outside is
+# mounted read-only at a fixed path.
+if [ -n "$TFVARS_HOST" ]; then
+  case "$TFVARS_HOST" in
+  "$SCRIPT_DIR"/*) DOCKER_ARGS+=(-e "SG_TFVARS=/app/${TFVARS_HOST#"$SCRIPT_DIR"/}") ;;
+  *)
+    [ -f "$TFVARS_HOST" ] || { sg_err "tfvars file not found: $TFVARS_HOST"; exit 1; }
+    DOCKER_ARGS+=(-v "$TFVARS_HOST:/tmp/sg-run.tfvars:ro" -e "SG_TFVARS=/tmp/sg-run.tfvars")
+    ;;
+  esac
+fi
 
 # TFC auth: prefer a long-lived TFE_TOKEN (forwarded via -e above); otherwise
 # mount the `terraform login` credentials file read-only.
