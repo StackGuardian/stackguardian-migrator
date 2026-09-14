@@ -53,6 +53,7 @@ SG_BASE_URL_SET="${SG_BASE_URL:-}"
 SG_BASE_URL="${SG_BASE_URL:-https://api.app.stackguardian.io}"
 ASSUME_YES=0
 PURGE=0
+UPGRADE=0
 CREATE_GROUPS=1
 ENRICH_VARSETS=1
 VCS_TRIGGERS=1
@@ -89,6 +90,8 @@ Usage: $PROG [options] <command>
 
 Commands:
   init        Guided setup: discovers TFC/SG resources and writes terraform.tfvars
+              (--upgrade: append the settings an older file lacks, with defaults;
+              nothing else is touched, no prompts)
   preflight   Verify tokens and every connector/runner/org referenced in tfvars
               (runs automatically before apply, import and all)
   apply       Run the transformer (terraform apply) to generate payloads + state
@@ -142,6 +145,7 @@ Options:
                      tfWorkspaceTags for the export)
   --exclude-tag NAME Leave workspaces carrying the tag out (repeatable; adds to tfWorkspaceIgnoreTags)
   --all              With 'clean': also remove config (terraform.tfvars, mapping, .sg)
+  --upgrade          With 'init': append missing settings to an existing terraform.tfvars
   -v, --verbose      Show full terraform/tool output (default: concise)
   -y, --yes          Skip the import confirmation prompt
   -h, --help         Show this help
@@ -294,6 +298,22 @@ seg_of() {
 cmd_init() {
   sg_step "Phase: init"
   mkdir -p "$SG_REPO_ROOT/.sg" "$SG_CACHE_BIN"
+  if [ "$UPGRADE" -eq 1 ]; then
+    # Bring an older file up to date without asking anything: append the
+    # settings it lacks with their defaults and comments, touch nothing else.
+    [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS") — nothing to upgrade. Run: $PROG init"
+    local added parse_err
+    if ! parse_err="$(tfvars_valid)"; then die "$(sg_rel "$TFVARS") is not valid HCL: ${parse_err:-parse error}"; fi
+    added="$(tfvars_upgrade)" || die "could not upgrade $(sg_rel "$TFVARS")"
+    if [ -z "$added" ]; then
+      sg_success "$(sg_rel "$TFVARS") is up to date — every setting of this version is present"
+    else
+      sg_success "appended $(wc -l <<<"$added" | tr -d ' ') setting(s) to $(sg_rel "$TFVARS") with their defaults (previous version kept as $(basename "$TFVARS").bak):"
+      sed 's/^/    /' <<<"$added" >&2
+      sg_dim "review them at the end of the file; a default is the same as leaving the setting out"
+    fi
+    return 0
+  fi
   if ! sg_interactive; then
     # Non-interactive (CI, no TTY, -y): fall back to the template.
     if [ ! -f "$TFVARS" ]; then
@@ -1100,7 +1120,7 @@ finish_line() {
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
 SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
-SG_OPTIONS="--org --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1183,6 +1203,7 @@ _sg_migrate() {
     '*--tag[Only workspaces carrying this tag]:tag' \\
     '*--exclude-tag[Leave workspaces carrying this tag out]:tag' \\
     '--all[With clean: also remove config]' \\
+    '--upgrade[With init: append missing settings to terraform.tfvars]' \\
     '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
     '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
     '(-h --help)'{-h,--help}'[Show help]' \\
@@ -1272,6 +1293,7 @@ main() {
     --exclude-tag=*) TAG_EXCLUDE+=("${1#*=}") ;;
     -v | --verbose) VERBOSE=1 ;;
     --all) PURGE=1 ;;
+    --upgrade) UPGRADE=1 ;;
     -h | --help)
       usage
       exit 0

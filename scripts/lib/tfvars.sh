@@ -217,4 +217,66 @@ $(if [ -n "${W_WS_TEMPLATE_JSON:-}" ] && [ "$W_WS_TEMPLATE_JSON" != "{}" ]; then
   fi)
 TFVARS
   tfvars_invalidate
+  # Settings the wizard does not manage (tfProjects, cloudAuthVarPatterns, a
+  # hand-added variable) are carried over from the previous file as they were
+  # (W_PREV_JSON, read by wizard_run before this rewrite), so a re-run of init
+  # never drops them.
+  if [ -n "${W_PREV_JSON:-}" ] && [ "$W_PREV_JSON" != "{}" ]; then
+    local jqb rendered extra k
+    jqb="$(sg_resolve jq sg_ensure_jq)"
+    rendered="$("$(sg_resolve hcl2json sg_ensure_hcl2json)" "$dest" 2>/dev/null | "$jqb" -c 'keys' || echo '[]')"
+    extra="$(printf '%s' "$W_PREV_JSON" | "$jqb" -r --argjson have "$rendered" 'keys - $have | .[]')"
+    if [ -n "$extra" ]; then
+      {
+        printf '\n# Kept from the previous file (not asked by init):\n'
+        while IFS= read -r k; do
+          [ -n "$k" ] || continue
+          printf '%s = %s\n' "$k" "$(_tfvars_hcl "$(printf '%s' "$W_PREV_JSON" | "$jqb" -c --arg k "$k" '.[$k]')")"
+        done <<<"$extra"
+      } >>"$dest"
+    fi
+  fi
+}
+
+# tfvars_example — the shipped terraform.tfvars.example (every setting, with
+# its default and comment); the reference for what a complete file contains.
+tfvars_example() { printf '%s' "${TFVARS_EXAMPLE:-$SG_REPO_ROOT/transformer/terraform-cloud/terraform.tfvars.example}"; }
+
+# tfvars_missing_keys — the settings terraform.tfvars.example has that the
+# current file does not, one per line (a file written by an older init).
+tfvars_missing_keys() {
+  local jqb
+  jqb="$(sg_resolve jq sg_ensure_jq)"
+  "$jqb" -nr --argjson have "$(tfvars_json | "$jqb" -c 'keys')" \
+    --argjson all "$("$(sg_resolve hcl2json sg_ensure_hcl2json)" "$(tfvars_example)" 2>/dev/null | "$jqb" -c 'keys' || echo '[]')" \
+    '$all - $have | .[]'
+}
+
+# tfvars_upgrade — append the settings the file lacks, each with the comment
+# and default from terraform.tfvars.example, under a dated header. Nothing that
+# is already in the file is touched (comments and formatting included), so
+# this is safe for a hand-edited file and for CI. Prints the added keys, one
+# per line; exit 0 with no output when the file is up to date.
+tfvars_upgrade() {
+  local missing block keys=""
+  missing="$(tfvars_missing_keys)"
+  [ -n "$missing" ] || return 0
+  # Paragraphs of the example (blank-line separated); a paragraph belongs to
+  # the setting it assigns (first uncommented `key =` line). Commented-out
+  # examples travel with the setting above them.
+  block="$(awk -v RS= -v ORS='\n\n' -v want="$(printf '%s' "$missing" | tr '\n' ' ') " '
+    {
+      key = ""
+      n = split($0, lines, "\n")
+      for (i = 1; i <= n; i++) if (match(lines[i], /^[A-Za-z_][A-Za-z0-9_]* *=/)) { key = substr(lines[i], 1, RLENGTH); sub(/ *=$/, "", key); break }
+      if (key != "" && index(want, key " ") > 0) print
+    }' "$(tfvars_example)")"
+  [ -n "$block" ] || return 0
+  cp "$TFVARS" "$TFVARS.bak"
+  {
+    printf '\n# --- Added by %s init --upgrade on %s: settings this file predates, with their\n# --- defaults (same as leaving them out). Review and adjust.\n\n' "${PROG:-sg-migrate.sh}" "$(date -u +%Y-%m-%d)"
+    printf '%s\n' "$block"
+  } >>"$TFVARS"
+  tfvars_invalidate
+  printf '%s\n' "$missing"
 }

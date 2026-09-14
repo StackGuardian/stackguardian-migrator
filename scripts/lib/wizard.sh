@@ -634,6 +634,8 @@ wizard_run() {
   # The name exclude list is a hand-edit / CI knob: kept as is, never asked.
   W_IGNORE_NAMES_JSON="$(tfvars_get_json .tfWorkspaceIgnoreNames)"
   [ "$W_IGNORE_NAMES_JSON" = "null" ] && W_IGNORE_NAMES_JSON='[]'
+  # Everything else the wizard does not ask about is carried over by tfvars_write.
+  W_PREV_JSON="$(tfvars_json)"
   wizard_tfc && wizard_sg && wizard_projects && wizard_policy || { sg_err "init aborted"; return 1; }
   wizard_templates
   wizard_review || { sg_log "nothing written"; return 1; }

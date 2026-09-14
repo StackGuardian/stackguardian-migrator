@@ -395,6 +395,13 @@ preflight_run() {
     pf_fail "$(sg_rel "$TFVARS") is not valid HCL: ${parse_err:-parse error}"
     die "fix the file (or re-run '$PROG init') and try again."
   fi
+  # A file written by an older version: the missing settings keep their
+  # defaults, so this only points at what is new.
+  local missing
+  missing="$(tfvars_missing_keys | tr '\n' ' ')"
+  if [ -n "$missing" ]; then
+    pf_warn "$(sg_rel "$TFVARS") predates these settings (defaults apply): ${missing% }— '$PROG init --upgrade' appends them with their defaults and comments"
+  fi
   case "$ctx" in
   apply)
     preflight_tfc
