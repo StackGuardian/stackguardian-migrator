@@ -17,6 +17,9 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 `./sg-migrate.sh` runs the whole flow — `terraform apply` → HCL→JSON conversion → schema validation → bulk import — with all tooling (Terraform, `jq`, `hcl2json`, `yajsv`, `sg-cli`) isolated in a Docker image, so it behaves identically on Linux, macOS, and Windows. Docker is required for this path; without it the script automatically falls back to running natively (downloading pinned tools into `.sg/cached/`).
 
 ```shell
+git clone https://github.com/StackGuardian/stackguardian-migrator.git
+cd stackguardian-migrator
+
 export TFE_TOKEN=<TFC/TFE token>     # long-lived API token (User/Team/Org token from the TFC UI)
 export SG_API_TOKEN=<your SG token>
 export SG_ORG=<your SG org>
@@ -27,13 +30,14 @@ export SG_ORG=<your SG org>
 
 That's it — no IDs to look up and no workflow-group mapping to fill in. `init` lists what the tokens can see (TFC organisations and workspaces, SG VCS/cloud connectors and runner groups, the org's execution preset) and writes `terraform.tfvars` from your picks — it also reads which VCS provider your TFC workspaces are connected to, lists the matching connectors first and takes the repository URL prefix from TFC. `all` verifies every reference **before** running terraform (preflight — including that the VCS connector, the VCS kind and the repo URL prefix agree with each other and with the TFC repositories), prints a migration summary after the export, shows a per-workflow import plan (create/update, Terraform version, runner, triggers, secrets), and ends with a **post-import checklist** of what still needs a human. Phases are numbered, long steps show a live progress line, and every phase reports how long it took. Each TFC project is imported into an SG workflow group named `tfc-<project>`, **created automatically via the API** if it doesn't exist.
 
+- **Updating.** Clone the repo (don't fork it or download the release zip) and run `./sg-migrate.sh update` to pull the latest version; it fast-forwards the checkout and rebuilds the Docker image only if the `Dockerfile` changed. Your `terraform.tfvars`, `export/` and `.sg/` are never tracked, so they survive every update. To stay on a fixed release instead, `git checkout v1.2.2` (then `git checkout master` to follow the latest again).
 - Single phase: `./sg-migrate.sh preflight|apply|enrich|convert|validate|import|triggers|checklist`. Running `./sg-migrate.sh` with no command prints the help menu.
 - **Resume.** `all` remembers what it completed (`.sg/state.json`) and skips phases whose inputs have not changed, so after a failure you just re-run it; files already imported in full are skipped and files with failures are retried. `--fresh` redoes everything.
 - **Scope.** `--project <segment>` and `--workspace <name>` (repeatable) limit every phase to a subset — migrate one team first, then the rest.
 - **Dry run.** `./sg-migrate.sh import --dry-run` prints the per-workflow plan and stops; nothing is created.
 - **Sensitive variables** (which TFC never exposes) are recreated as SG secrets with the value `CHANGE_ME` and referenced from the workflows as `${secret::<name>}`; the checklist lists each one to fill in. Opt out with `--no-secret-stubs`.
 - TFC **Variable Set** variables are merged into the payloads automatically (the `enrich` phase, via the TFC API); skip it with `--no-variable-sets`.
-- `./sg-migrate.sh clean` removes local working artifacts (`export/`, Terraform state, run state, tool cache) for a fresh start; add `--all` to also remove config. `clean` always runs locally.
+- `./sg-migrate.sh clean` removes local working artifacts (`export/`, Terraform state, run state, tool cache) for a fresh start; add `--all` to also remove config. `clean` (like `update` and `completion`) always runs locally.
 - **Override** a project's target group (to reuse an existing group) in `.sg/workflow-groups.json`: `{"<project-segment>": "<existing-group>"}`. Override groups must already exist (they're not auto-created).
 - Output is concise by default (terraform's plan/init noise is hidden; shown on error). Add `-v`/`--verbose` for full output. Known API errors come with a hint naming the `terraform.tfvars` field to fix.
 - Flags: `-y` skip the import prompt (CI; also makes `init` non-interactive), `--concurrency N` parallel jobs, `--org NAME`, `--no-create-groups` require groups to pre-exist, `--skip-preflight`, `--build` rebuild the image, `--native`/`--local` force a local run even when Docker is available.

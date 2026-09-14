@@ -98,6 +98,8 @@ Commands:
               tool cache). Add --all to also remove config (terraform.tfvars, mapping).
   completion  Print a completion script for your shell (bash/zsh auto-detected):
               \`source <($PROG completion)\`
+  update      Pull the latest version of the migrator (git pull --ff-only) and rebuild
+              the Docker image if the Dockerfile changed. Runs on the host.
 
 Each TFC project maps to an SG workflow group named tfc-<project>, created via the
 API if missing. Override a project's target group in .sg/workflow-groups.json
@@ -983,7 +985,7 @@ finish_line() {
 
 # Single source of truth for shell completion (keep in sync with the parser below
 # and the host-only flags in sg-migrate.sh).
-SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion"
+SG_COMMANDS="init preflight apply enrich convert validate import triggers checklist all clean completion update"
 SG_OPTIONS="--org --export-dir --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --all -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
@@ -1138,6 +1140,11 @@ main() {
     completion)
       cmd_completion "${2:-}"
       exit 0
+      ;;
+    update)
+      # Host-only: needs the checkout's git, not the container.
+      sg_err "'update' runs on the host: use ./sg-migrate.sh update"
+      exit 2
       ;;
     *)
       echo "Unknown argument: $1" >&2

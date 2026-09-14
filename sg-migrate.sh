@@ -6,7 +6,8 @@
 # credentials file read-only, and forwards SG_API_TOKEN/SG_ORG.
 #
 # Runs natively (no Docker) when: --native/--local is passed, SG_NATIVE=1 is set,
-# the command is 'clean' (a local filesystem op), or docker is unavailable.
+# the command is 'clean'/'completion'/'update' (local filesystem/git ops), or
+# docker is unavailable.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,11 +28,13 @@ for a in "$@"; do
   esac
 done
 
-# Help, 'clean' and 'completion' only touch the local shell/filesystem — no
-# container. With no command at all, migrate.sh prints the help menu.
+# Help, 'clean', 'completion' and 'update' only touch the local shell/filesystem
+# (or git) — no container. With no command at all, migrate.sh prints the help menu.
 HAS_CMD=0
+UPDATE=0
 for a in ${ARGS[@]+"${ARGS[@]}"}; do
   case "$a" in
+  update) NATIVE=1; HAS_CMD=1; UPDATE=1 ;;
   clean | completion | -h | --help) NATIVE=1; HAS_CMD=1 ;;
   init | preflight | apply | enrich | convert | validate | import | triggers | checklist | all) HAS_CMD=1 ;;
   esac
@@ -45,6 +48,61 @@ case "$0" in */*) SG_PROG="./${0##*/}" ;; esac
 SG_SHELL="$(ps -p "$PPID" -o comm= 2>/dev/null | sed 's/^-//; s#.*/##')"
 case "$SG_SHELL" in bash | zsh) ;; *) SG_SHELL="$(basename "${SHELL:-zsh}")" ;; esac
 export SG_SHELL
+
+# 'update' pulls the latest version of this checkout (fast-forward only) and
+# rebuilds the image when the Dockerfile changed. Everything the user edits or
+# generates (terraform.tfvars, export/, .sg/) is untracked, so a pull never
+# touches it. Needs the host's git, hence never runs in the container.
+cmd_update() {
+  local repo="https://github.com/StackGuardian/stackguardian-migrator.git"
+  local g=(git -C "$SCRIPT_DIR")
+  if ! "${g[@]}" rev-parse --git-dir >/dev/null 2>&1; then
+    sg_err "$SCRIPT_DIR is not a git checkout (downloaded archive?). Clone the repo instead, then updates are one command:"
+    sg_dim "git clone $repo"
+    exit 1
+  fi
+  local branch
+  if ! branch="$("${g[@]}" symbolic-ref -q --short HEAD)"; then
+    sg_err "this checkout is pinned to $("${g[@]}" describe --tags --always 2>/dev/null) (detached HEAD); nothing to pull."
+    sg_dim "To follow the latest version: git checkout master && $SG_PROG update"
+    exit 1
+  fi
+  local dirty
+  dirty="$("${g[@]}" status --porcelain --untracked-files=no)"
+  if [ -n "$dirty" ]; then
+    sg_err "local changes to tracked files block the update:"
+    printf '%s\n' "$dirty" | sed 's/^/    /' >&2
+    sg_dim "Keep them with 'git stash' or discard with 'git checkout -- <file>', then re-run $SG_PROG update"
+    exit 1
+  fi
+  local old new
+  old="$("${g[@]}" rev-parse HEAD)"
+  sg_step "Updating $branch"
+  if ! "${g[@]}" pull --ff-only; then
+    sg_err "git pull failed. If '$branch' has no upstream or local commits, reset it to the published branch: git checkout -B master origin/master"
+    exit 1
+  fi
+  new="$("${g[@]}" rev-parse HEAD)"
+  if [ "$old" = "$new" ]; then
+    sg_success "already up to date (${new:0:7})"
+    return 0
+  fi
+  sg_success "updated ${old:0:7}..${new:0:7}"
+  "${g[@]}" log --oneline --no-decorate "$old..$new" | sed 's/^/    /' >&2
+  if [ -z "$("${g[@]}" diff --name-only "$old" "$new" -- Dockerfile)" ]; then
+    sg_dim "image $IMAGE unchanged (Dockerfile untouched)"
+  elif command -v docker >/dev/null 2>&1; then
+    sg_log "Dockerfile changed; rebuilding image $IMAGE ..."
+    docker build -t "$IMAGE" "$SCRIPT_DIR"
+    sg_success "image $IMAGE rebuilt"
+  else
+    sg_dim "Dockerfile changed, but docker is not available here; native runs need no rebuild"
+  fi
+}
+if [ "$UPDATE" = "1" ]; then
+  cmd_update
+  exit 0
+fi
 
 if [ "$NATIVE" = "1" ] || ! command -v docker >/dev/null 2>&1; then
   [ "$NATIVE" = "1" ] || sg_warn "docker not found; running natively"
