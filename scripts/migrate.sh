@@ -671,7 +671,8 @@ cmd_apply() {
   # tfWorkspaceIgnoreNames; the module applies the tag filters on top.
   scope_tfvar_args
   tfvar_args=(${SCOPE_TFVAR_ARGS[@]+"${SCOPE_TFVAR_ARGS[@]}"})
-  [ "${#tfvar_args[@]}" -gt 0 ] && sg_log "run scope: $(scope_describe)"
+  # Scope flags are logged here; the configuration overlay was logged by overlay_build.
+  [ -n "$(scope_describe)" ] && sg_log "run scope: $(scope_describe)"
 
   if [ "$VERBOSE" -eq 1 ]; then
     # shellcheck disable=SC2119
@@ -794,14 +795,41 @@ upload_state() {
 # do_import reads those from <out>; non-zero only when a call itself could
 # not be made.
 import_bulk() {
-  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err line cur="" cli_out pat
+  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err line cur="" cli_out pat known upd_names create_file
   local -a redo=() exists=() updated=()
   : >"$out"
-  n_direct="$("$JQ_BIN" '[.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)] | length' "$file")"
-  with_vars="$file"
+
+  # Workflows that already exist in the group (the plan's "update" rows) are
+  # PATCHed straight away, with their state re-uploaded; only the rest goes
+  # through the create path below. The 409 handling further down stays as the
+  # safety net for a workflow created between the plan and this call.
+  create_file="$file"
+  known="$(sg_list_workflows "$grp")"
+  printf '%s' "$known" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || known='[]'
+  upd_names="$("$JQ_BIN" -c --argjson ex "$known" '[.[].ResourceName | select(. as $n | $ex | index($n) != null)]' "$file")"
+  if [ "$("$JQ_BIN" 'length' <<<"$upd_names")" -gt 0 ]; then
+    sg_log "$("$JQ_BIN" 'length' <<<"$upd_names") workflow(s) already exist in $grp — updating them"
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      entry="$("$JQ_BIN" -c --arg n "$name" 'first(.[] | select(.ResourceName == $n))' "$file")"
+      if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_update_workflow "$grp" "$entry" 2>/dev/null)"; then
+        sg_log "  $name: updated"
+        printf '[updated] %s\n' "$name" >>"$out"
+        upload_state "$grp" "$name" "$file" "$out" || true
+      else
+        # Same shape as sg-cli's failure line (parsed by do_import).
+        printf 'Failed to update %s: %s\n' "$name" "$(tail -n1 <<<"$err")" | tee -a "$out"
+      fi
+    done < <("$JQ_BIN" -r '.[]' <<<"$upd_names")
+    create_file="$(mktemp)"
+    "$JQ_BIN" --argjson u "$upd_names" 'map(select(.ResourceName as $n | $u | index($n) == null))' "$file" >"$create_file"
+  fi
+
+  n_direct="$("$JQ_BIN" '[.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)] | length' "$create_file")"
+  with_vars="$create_file"
   if [ "$n_direct" -gt 0 ]; then
     with_vars="$(mktemp)"
-    "$JQ_BIN" 'map(select((.VCSConfig.iacInputData.data // {}) | length > 0))' "$file" >"$with_vars"
+    "$JQ_BIN" 'map(select((.VCSConfig.iacInputData.data // {}) | length > 0))' "$create_file" >"$with_vars"
   fi
   if [ "$("$JQ_BIN" length "$with_vars")" -gt 0 ]; then
     cli_out="$(mktemp)"
@@ -853,8 +881,11 @@ import_bulk() {
       for name in "${redo[@]}"; do upload_state "$grp" "$name" "$file" "$out" || true; done
     fi
   fi
-  [ "$with_vars" != "$file" ] && rm -f "$with_vars"
-  [ "$n_direct" -gt 0 ] || return "$rc"
+  [ "$with_vars" != "$create_file" ] && rm -f "$with_vars"
+  if [ "$n_direct" -eq 0 ]; then
+    [ "$create_file" != "$file" ] && rm -f "$create_file"
+    return "$rc"
+  fi
 
   sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
   while IFS= read -r entry; do
@@ -871,7 +902,8 @@ import_bulk() {
       # Same shape as sg-cli's failure line (parsed by do_import).
       printf 'Failed to create %s: %s\n' "$name" "$(tail -n1 <<<"$err")" | tee -a "$out"
     fi
-  done < <("$JQ_BIN" -c '.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)' "$file")
+  done < <("$JQ_BIN" -c '.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)' "$create_file")
+  [ "$create_file" != "$file" ] && rm -f "$create_file"
   return "$rc"
 }
 
@@ -911,11 +943,11 @@ do_import() {
     if [[ "$line" =~ $TF_CEILING_RE ]]; then
       fb+=("${BASH_REMATCH[1]}")
       ceiling="${BASH_REMATCH[2]}"
-    elif [[ "$line" =~ Failed\ to\ create\ ([^:]+):\ [0-9]+:\ (.*)$ ]]; then
-      failed+=("${BASH_REMATCH[1]}")
-      explain_api_error "${BASH_REMATCH[2]}"
-    elif [[ "$line" =~ Failed\ to\ create\ ([^:]+): ]]; then
-      failed+=("${BASH_REMATCH[1]}")
+    elif [[ "$line" =~ Failed\ to\ (create|update)\ ([^:]+):\ [0-9]+:\ (.*)$ ]]; then
+      failed+=("${BASH_REMATCH[2]}")
+      explain_api_error "${BASH_REMATCH[3]}"
+    elif [[ "$line" =~ Failed\ to\ (create|update)\ ([^:]+): ]]; then
+      failed+=("${BASH_REMATCH[2]}")
     elif [[ "$line" =~ ^\[state\]\ uploaded\ (.+)$ ]]; then
       st_ok+=("${BASH_REMATCH[1]}")
     elif [[ "$line" =~ ^\[state\]\ failed\ ([^:]+): ]]; then
@@ -948,7 +980,7 @@ do_import() {
     out="$(mktemp)"
     import_bulk "$grp" "$tmp" "$out" || rc=1
     for name in "${fb[@]}"; do
-      if grep -q "Failed to create $name:" "$out"; then
+      if grep -qE "Failed to (create|update) $name:" "$out"; then
         failed+=("$name")
       else
         line="$("$JQ_BIN" -r --arg n "$name" '.[] | select(.ResourceName == $n) | .TerraformConfig.terraformVersion' "$f")"
@@ -1242,6 +1274,10 @@ _sg_migrate() {
   cmds=(
 $(printf '%s\n' "$SG_COMMAND_DESCS" | sed "s/.*/    '&'/")
   )
+  # Every option has a distinct description on purpose: _arguments folds
+  # options that share one text into a single "--verbose -v -- ..." row, and
+  # with a multi-entry matcher-list (oh-my-zsh's default) such rows make zsh
+  # list the whole table one cell per line, repeated per matcher.
   _arguments -s \\
     '--org[StackGuardian org for import]:org' \\
     '--region[StackGuardian region]:region:(eu us)' \\
@@ -1268,10 +1304,14 @@ $(printf '%s\n' "$SG_COMMAND_DESCS" | sed "s/.*/    '&'/")
     '--vcs-connector[VCS connector for this run (kind looked up in SG)]:id' \\
     '--runner-group[Private runner group for this run (shared = SG runners)]:name' \\
     '--workflow-group[Workflow group for the --project workflows]:name' \\
-    '(-v --verbose)'{-v,--verbose}'[Show full terraform/tool output]' \\
-    '(-y --yes)'{-y,--yes}'[Skip the import confirmation prompt]' \\
-    '(-h --help)'{-h,--help}'[Show help]' \\
-    '(--native --local)'{--native,--local}'[Run natively instead of in Docker]' \\
+    '(-v --verbose)-v[Same as --verbose]' \\
+    '(-v --verbose)--verbose[Show full terraform/tool output]' \\
+    '(-y --yes)-y[Same as --yes]' \\
+    '(-y --yes)--yes[Skip the import confirmation prompt]' \\
+    '(-h --help)-h[Same as --help]' \\
+    '(-h --help)--help[Show help]' \\
+    '(--native --local)--native[Run natively instead of in Docker]' \\
+    '(--native --local)--local[Same as --native]' \\
     '--build[Rebuild the Docker image first]' \\
     '1:command:->cmd' \\
     '2:shell:->shell'
