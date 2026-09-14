@@ -527,6 +527,51 @@ sgcli_bulk() {
   return "${PIPESTATUS[0]}"
 }
 
+# import_bulk <group> <file> <out> — import one payload file: sg-cli for the
+# workflows that have Terraform variables, a direct API POST for the ones
+# without — sg-cli drops an empty iacInputData.data and the API then rejects
+# the workflow. TODO(sg-cli): workaround; remove the split once sg-cli ships
+# with sg-sdk-go >= v1.5.7 (see sg_create_workflow). The direct path writes
+# the same "Failed to create <name>: <code>: <body>" lines sg-cli prints, so
+# do_import parses both alike. Like sg-cli, exits 0 even when individual
+# workflows were rejected — do_import reads those from <out>; non-zero only
+# when a call itself could not be made.
+import_bulk() {
+  local grp="$1" file="$2" out="$3" rc=0 n_direct with_vars entry name err state
+  : >"$out"
+  n_direct="$("$JQ_BIN" '[.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)] | length' "$file")"
+  if [ "$n_direct" -eq 0 ]; then
+    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$file" "$out"
+    return
+  fi
+  with_vars="$(mktemp)"
+  "$JQ_BIN" 'map(select((.VCSConfig.iacInputData.data // {}) | length > 0))' "$file" >"$with_vars"
+  if [ "$("$JQ_BIN" length "$with_vars")" -gt 0 ]; then
+    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$with_vars" "$out" || rc=1
+  fi
+  rm -f "$with_vars"
+  sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
+  while IFS= read -r entry; do
+    name="$("$JQ_BIN" -r '.ResourceName' <<<"$entry")"
+    if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_create_workflow "$grp" "$entry" 2>/dev/null)"; then
+      state="$("$JQ_BIN" -r '.CLIConfiguration.TfStateFilePath // empty' <<<"$entry")"
+      if [ -z "$state" ]; then
+        sg_log "  $name: created (no state file to upload)"
+      elif [ ! -f "$state" ]; then
+        sg_warn "  $name: created, but the state file is missing: $(sg_rel "$state")"
+      elif sg_upload_tfstate "$grp" "$name" "$state"; then
+        sg_log "  $name: created, state file uploaded"
+      else
+        sg_warn "  $name: created, but the state file upload failed ($(sg_rel "$state"))"
+      fi
+    else
+      # Same shape as sg-cli's failure line (parsed by do_import).
+      printf 'Failed to create %s: %s\n' "$name" "$(tail -n1 <<<"$err")" | tee -a "$out"
+    fi
+  done < <("$JQ_BIN" -c '.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)' "$file")
+  return "$rc"
+}
+
 # Regex for the API's rejection of a Terraform version above SG's managed
 # ceiling. SG bundles managed runtimes only up to the last MPL-licensed (FOSS)
 # Terraform release; newer versions are BSL and are not shipped.
@@ -557,7 +602,7 @@ do_import() {
   fi
   sg_log "importing $(basename "$f") -> $grp"
   out="$(mktemp)"
-  sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$work" "$out" || rc=1
+  import_bulk "$grp" "$work" "$out" || rc=1
   all_names="$("$JQ_BIN" -c '[.[].ResourceName]' "$work")"
 
   while IFS= read -r line; do
@@ -593,7 +638,7 @@ do_import() {
         die "could not patch $(basename "$f") for the Terraform version fallback"
       }
     out="$(mktemp)"
-    sg_retry "$RETRIES" "$RETRY_BASE" -- sgcli_bulk "$grp" "$tmp" "$out" || rc=1
+    import_bulk "$grp" "$tmp" "$out" || rc=1
     for name in "${fb[@]}"; do
       if grep -q "Failed to create $name:" "$out"; then
         failed+=("$name")

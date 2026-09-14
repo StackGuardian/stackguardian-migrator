@@ -95,6 +95,48 @@ sg_list_workflows() {
 # sg_patch_workflow <group> <wf> <json> — PATCH a workflow.
 sg_patch_workflow() { sg_api_patch "$(wf_url "$1" "$2")" "$3"; }
 
+# --- direct workflow create (sg-cli workaround) -----------------------------
+# sg-cli (<= v2.2.1, on sg-sdk-go v1.1.0) round-trips every payload entry through
+# the SDK's Workflow struct, whose iacInputData.data map is tagged omitempty: a
+# workspace with no Terraform variables ("data": {}) reaches the API without the
+# key and is rejected with "VCSConfig.iacInputData.data: This field is required."
+# Such entries are created straight from the payload JSON instead.
+# TODO(sg-cli): workaround — the fix belongs in sg-cli: bump sg-sdk-go to
+# >= v1.5.7 (IacInputData.Data became a pointer so "data": {} is sent) or POST
+# the raw entry. Drop this block and import_bulk's split once a release has it.
+
+# sg_create_workflow <group> <entry-json> — POST one payload entry (PATCH when
+# the name already exists, as sg-cli does). Silent on success; on failure prints
+# "<http-code>: <body>" so the caller can log a sg-cli-style line. 0/22/1.
+sg_create_workflow() {
+  local grp="$1" entry="$2" jq name body tmp rc=0
+  jq="$(sg_resolve jq sg_ensure_jq)"
+  name="$("$jq" -r '.ResourceName' <<<"$entry")"
+  # CLIConfiguration is sg-cli's own block; VCSTriggers is applied in the
+  # trigger pass (the create API does not take it).
+  body="$("$jq" -c 'del(.CLIConfiguration, .VCSTriggers)' <<<"$entry")"
+  tmp="$(mktemp)"
+  # Response into a file, not $(...): SG_HTTP_CODE must survive into this shell.
+  sg_api_raw POST "$(sg_org_url)/wfgrps/$grp/wfs/" "$body" >"$tmp" || rc=$?
+  if [ "$rc" -eq 22 ] && grep -q "Workflow name not unique" "$tmp"; then
+    rc=0
+    sg_api_raw PATCH "$(wf_url "$grp" "$name")" "$body" >"$tmp" || rc=$?
+  fi
+  [ "$rc" -eq 0 ] || printf '%s: %s\n' "$SG_HTTP_CODE" "$(tr -d '\n' <"$tmp")"
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# sg_upload_tfstate <group> <wf> <file> — the state upload sg-cli does after a
+# bulk create: fetch the presigned URL, PUT the file. 0 on success.
+sg_upload_tfstate() {
+  local url code
+  url="$(sg_api_get "$(wf_url "$1" "$2")tfstate_upload_url" | "$(sg_resolve jq sg_ensure_jq)" -r '.msg // empty')" || return 1
+  [ -n "$url" ] || return 1
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT -H "Content-Type: application/json" -T "$3" "$url" 2>/dev/null)" || true
+  case "$(sg_norm_code "$code")" in 2*) return 0 ;; *) return 1 ;; esac
+}
+
 # --- execution preset (org workflow defaults) ------------------------------
 # Settings -> Runner groups -> Execution presets is stored as the org's
 # Settings.workflowDefaults: RunnerConstraints plus a TerraformConfig each for
