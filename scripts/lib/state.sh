@@ -11,7 +11,14 @@
 #           "import":  { "<seg>":   {"at": iso, "payload_sha": sha, "group": g,
 #                                    "imported": [...], "failed": [...],
 #                                    "tf_fallback": [...],
-#                                    "state_uploaded": [...], "state_failed": [...]} } }
+#                                    "state_uploaded": [...], "state_failed": [...]} },
+#           "triggers": { "<seg>":  {"at": iso, "group": g, "set": [...], "unchanged": [...],
+#                                    "failed": [...], "missing": [...],
+#                                    "sha": {"<wf>": sha-of-posted-body}} } }
+#
+# import.<seg>.group is also the anchor of the "never move" check in the import
+# plan: a project whose target group changed while its workflows still exist
+# in the old group is refused (StackGuardian cannot move workflows).
 
 STATE_FILE="${SG_STATE_FILE:-$SG_REPO_ROOT/.sg/state.json}"
 

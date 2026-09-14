@@ -85,7 +85,7 @@ create_secret_stubs() {
     state_update '.secrets[$n] = {workflow: $w, group: $g, var: $v, category: $c, workspace: $ws, at: $at}' \
       --arg n "$name" --arg w "$wf" --arg g "$grp" --arg v "$var" --arg c "$cat" --arg ws "$ws" --arg at "$(state_now)"
   done < <("$JQ_BIN" -r '.skippedSensitiveVars | to_entries[] | .key as $ws | .value[] | "\($ws)\t\(.)"' "$summary")
-  sg_log "secret stubs: $created created, $reused already existed, $patched workflow(s) now reference them, $skipped skipped"
+  sg_log "secret stubs: $created created, $reused already existed (kept — a secret's value is never overwritten), $patched workflow(s) now reference them, $skipped skipped"
   return 0
 }
 
@@ -129,7 +129,7 @@ write_checklist() {
     i_nonremote="$("$JQ_BIN" -r '.nonRemoteExecutionModes | to_entries[] | "- [ ] `\(.key)` used `\(.value)` execution in TFC — its state may live outside TFC; verify the exported state is current"' "$summary")"
     i_renamed="$("$JQ_BIN" -r '.renamedWorkspaces | to_entries[] | "- `\(.key)` → `\(.value)`"' "$summary")"
   fi
-  i_failed="$(printf '%s' "$st" | "$JQ_BIN" -r '.import // {} | to_entries[] | .value.group as $g | .value.failed[]? | "- [ ] `\($g)/\(.)` — see the import output for the API error; fix terraform.tfvars (or workspaceOverrides) and re-run `./sg-migrate.sh import`"')"
+  i_failed="$(printf '%s' "$st" | "$JQ_BIN" -r '.import // {} | to_entries[] | .value.group as $g | .value.failed[]? | "- [ ] `\($g)/\(.)` — see the import output for the API error; fix terraform.tfvars (projectOverrides / workspaceOverrides) and re-run `./sg-migrate.sh import`"')"
   [ -s "$EXPORT_DIR/terraform-version-fallbacks.log" ] && i_fallback="$(sed 's/^/- [ ] /' "$EXPORT_DIR/terraform-version-fallbacks.log")"
   i_trig="$(printf '%s' "$st" | "$JQ_BIN" -r '.triggers // {} | to_entries[] | .value.group as $g | (.value.failed[]? | "- [ ] `\($g)/\(.)` — trigger registration failed; check the connector has admin/webhook rights on the repository, then re-run `./sg-migrate.sh triggers`"), (.value.missing[]? | "- [ ] `\($g)/\(.)` — workflow was not imported, so no trigger was registered")')"
   [ -s "$EXPORT_DIR/state-export-failures.log" ] && i_state="$(sed 's/^/- [ ] /' "$EXPORT_DIR/state-export-failures.log")"
@@ -145,7 +145,7 @@ write_checklist() {
     printf '# Post-import checklist — StackGuardian org %s\n\n' "$ORG"
     printf 'Generated %s by stackguardian-migrator. Tick items as you complete them.\n\n' "$(state_now)"
     printf '## 1. Set the real values of the placeholder secrets\n\n'
-    printf 'TFC never exposes sensitive variable values, so each one was recreated as an SG secret with the value `CHANGE_ME` and referenced from its workflow as `${secret::<name>}`. Set the real values under [Org settings → Secrets](%s).\n\n' "$(secrets_ui_url)"
+    printf 'TFC never exposes sensitive variable values, so each one was recreated as an SG secret with the value `CHANGE_ME` and referenced from its workflow as `${secret::<name>}`. Set the real values under [Org settings → Secrets](%s). A secret that already existed was left untouched (its value is never overwritten by a re-run) — check it still holds the right value.\n\n' "$(secrets_ui_url)"
     _cl_block "$i_secrets"
     [ -n "$i_unstubbed" ] && printf '%s\n\n' "$i_unstubbed"
     printf '## 2. Workflows that failed to import\n\n'

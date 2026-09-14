@@ -452,12 +452,16 @@ plan_groups() {
 # VCSTriggers block, register its VCS triggers via the dedicated webhooks
 # endpoint (the bulk create API silently drops VCSTriggers; this second pass is
 # what actually wires up the repo webhook). Sends {VCSConfig, VCSTriggers} taken
-# straight from the (converted) payload. Per-workflow failures are surfaced but
-# do not abort the rest of the file.
+# straight from the (converted) payload. The endpoint upserts, so a re-run is
+# safe; to avoid needless calls the sha of each body is kept in state
+# (triggers.<seg>.sha) and an unchanged, already-set workflow is skipped
+# (--fresh re-sends everything). Per-workflow failures are surfaced but do not
+# abort the rest of the file.
 do_set_triggers() {
-  local f="$1" seg grp n i wf body rc=0 set=0 skip=0 ok=() failed=() missing=()
+  local f="$1" seg grp n i wf body sha prev rc=0 skip=0 ok=() failed=() missing=() unchanged=() shas='{}'
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
+  prev="$(state_read | "$JQ_BIN" -c --arg s "$seg" '.triggers[$s] // {}')"
   n="$("$JQ_BIN" 'length' "$f")"
   for ((i = 0; i < n; i++)); do
     if [ "$("$JQ_BIN" -r --argjson i "$i" '(.[$i].VCSTriggers // null) != null' "$f")" != "true" ]; then
@@ -474,22 +478,28 @@ do_set_triggers() {
       continue
     fi
     body="$("$JQ_BIN" -c --argjson i "$i" '{VCSConfig: .[$i].VCSConfig, VCSTriggers: .[$i].VCSTriggers}' "$f")"
-    if SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- \
-      sg_api_post "$(wf_triggers_endpoint "$grp" "$wf")" "$body"; then
-      set=$((set + 1))
+    sha="$(sg_sha "$body")"
+    if [ "$FRESH" -eq 0 ] && [ "$("$JQ_BIN" -r --arg w "$wf" --arg h "$sha" '((.sha // {})[$w] // "") == $h and ((.set // []) | index($w) != null)' <<<"$prev")" = "true" ]; then
+      unchanged+=("$wf")
+      shas="$("$JQ_BIN" -c --arg w "$wf" --arg h "$sha" '.[$w] = $h' <<<"$shas")"
+      continue
+    fi
+    if SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_set_vcs_triggers "$grp" "$wf" "$body"; then
       ok+=("$wf")
+      shas="$("$JQ_BIN" -c --arg w "$wf" --arg h "$sha" '.[$w] = $h' <<<"$shas")"
     else
       sg_warn "  vcs triggers failed: $grp/$wf"
       failed+=("$wf")
       rc=1
     fi
   done
-  sg_log "$(basename "$f"): set triggers on $set workflow(s) (skipped $skip without triggers)"
-  "$JQ_BIN" -nc --arg g "$grp" \
+  sg_log "$(basename "$f"): triggers set on ${#ok[@]} workflow(s), ${#unchanged[@]} unchanged, skipped $skip without triggers"
+  "$JQ_BIN" -nc --arg g "$grp" --argjson sha "$shas" \
     --argjson ok "$([ "${#ok[@]}" -gt 0 ] && names_json "${ok[@]}" || echo '[]')" \
+    --argjson unchanged "$([ "${#unchanged[@]}" -gt 0 ] && names_json "${unchanged[@]}" || echo '[]')" \
     --argjson failed "$([ "${#failed[@]}" -gt 0 ] && names_json "${failed[@]}" || echo '[]')" \
     --argjson missing "$([ "${#missing[@]}" -gt 0 ] && names_json "${missing[@]}" || echo '[]')" \
-    '{group: $g, set: $ok, failed: $failed, missing: $missing}' >"$EXPORT_DIR/.triggers-result.$seg.json"
+    '{group: $g, set: ($ok + $unchanged), unchanged: $unchanged, failed: $failed, missing: $missing, sha: $sha}' >"$EXPORT_DIR/.triggers-result.$seg.json"
   return "$rc"
 }
 

@@ -80,6 +80,25 @@ wfgroup_create() {
 wf_url() { printf '%s/wfgrps/%s/wfs/%s/' "$(sg_org_url)" "$1" "$2"; }
 wf_triggers_endpoint() { printf '%swebhooks/vcs_triggers/' "$(wf_url "$1" "$2")"; }
 
+# sg_set_vcs_triggers <group> <wf> <json> — POST the VCS triggers. The endpoint
+# is an upsert: a second call answers 200 ("VCS triggers updated" / "Webhook
+# already exists ..."), so re-runs are safe. Defensively also 0 on a 4xx whose
+# body says the webhook exists (older builds); 22 on any other 4xx, 1 otherwise.
+sg_set_vcs_triggers() {
+  local tmp rc=0
+  tmp="$(mktemp)"
+  # Not a $(...) capture: SG_HTTP_CODE must survive into this shell.
+  sg_api_raw POST "$(wf_triggers_endpoint "$1" "$2")" "$3" >"$tmp" || rc=$?
+  if [ "$rc" -eq 22 ] && grep -Eiq 'already (exists|registered)|duplicate' "$tmp"; then
+    rc=0
+  elif [ "$rc" -ne 0 ]; then
+    sg_err "  HTTP $SG_HTTP_CODE from vcs_triggers ($1/$2): $(head -c 300 "$tmp")"
+    if [ "$rc" -eq 22 ] && declare -F explain_api_error >/dev/null; then explain_api_error "$(head -c 2000 "$tmp")"; fi
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
 # sg_workflow_exists <group> <wf> — exit 0 when the workflow exists.
 sg_workflow_exists() { [ "$(sg_http_code GET "$(wf_url "$1" "$2")")" = "200" ]; }
 
