@@ -112,9 +112,12 @@ _sg_listall() {
   jqb="$(sg_resolve jq sg_ensure_jq)"
   while :; do
     body="$(sg_api_get "$(sg_org_url)/${path}?limit=100${key:+&lastevaluatedkey=$key}" 2>/dev/null)" || break
-    page="$(printf '%s' "$body" | "$jqb" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif (.data.Workflows? | type) == "array" then .data.Workflows elif type == "array" then . else [] end)[] | '"$expr"' | select(. != null and . != "")]' 2>/dev/null)" || page='[]'
-    acc="$("$jqb" -nc --argjson a "$acc" --argjson b "$page" '$a + $b')"
-    key="$(printf '%s' "$body" | "$jqb" -r '.lastevaluatedkey // empty' 2>/dev/null | "$jqb" -sRr @uri)"
+    # -s: an empty or non-JSON body (a 200 for a group that does not exist yet)
+    # must yield [] rather than an empty string that --argjson rejects.
+    page="$(printf '%s' "$body" | "$jqb" -sc '(.[0] // {}) as $b | [(if ($b | type) == "array" then $b elif ($b.msg | type) == "array" then $b.msg elif ($b.data | type) == "array" then $b.data elif ($b.data.Workflows? | type) == "array" then $b.data.Workflows else [] end)[] | '"$expr"' | select(. != null and . != "")]' 2>/dev/null)" || page='[]'
+    [ -n "$page" ] || page='[]'
+    acc="$("$jqb" -nc --argjson a "$acc" --argjson b "$page" '$a + $b' 2>/dev/null)" || acc="$page"
+    key="$(printf '%s' "$body" | "$jqb" -sr '(.[0] // {}) | if (.lastevaluatedkey | type) == "string" then .lastevaluatedkey else empty end' 2>/dev/null | "$jqb" -sRr @uri)"
     [ -n "$key" ] || break
   done
   printf '%s' "$acc"

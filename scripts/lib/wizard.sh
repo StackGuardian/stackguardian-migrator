@@ -117,6 +117,7 @@ wizard_tfc() {
   W_TFC_VCS_OTHER=0
   W_SEL_PROJECTS_JSON='[]'
   W_SEL_WS_JSON='[]'
+  W_PROJECTS_JSON='[]'
   projects='[]'
   if [ "$W_TFC_DISCOVERY" -eq 1 ] && ws="$(tfc_list_workspaces "$W_TFORG" 2>/dev/null)"; then
     W_TFC_WS_JSON="$ws"
@@ -128,6 +129,46 @@ wizard_tfc() {
     alltags="$(printf '%s' "$ws" | "$jqb" -r '[.[].tags[]?] | unique | join(", ")')"
   else
     alltags=""
+  fi
+
+  # Projects first: a TFC project becomes one SG workflow group, and the
+  # workspace questions below apply within the chosen projects. Written as
+  # tfProjects ([] = every project); --project narrows a run further.
+  local prev_projects pick names n
+  prev_projects="$(tfvars_get_json .tfProjects)"
+  [ "$prev_projects" = "null" ] && prev_projects='[]'
+  if [ "${prn:-0}" -gt 1 ]; then
+    n=0
+    while IFS=$'\t' read -r name cnt; do
+      [ -n "$name" ] || continue
+      n=$((n + 1))
+      sg_dim "  $n) $name ($cnt workspace(s))"
+    done <<<"$(printf '%s' "$W_TFC_WS_JSON" | "$jqb" -r --argjson pr "$projects" '
+      ($pr | map({key: .id, value: .name}) | from_entries) as $names
+      | group_by(.project) | sort_by(-length) | .[] | "\($names[.[0].project] // .[0].project)\t\(length)"')"
+    if [ "$prev_projects" = "[]" ]; then
+      pick="$(sg_select "Which TFC projects should be migrated?" "all|every project ($prn)" "pick|some of them, by name")" || return 1
+    else
+      pick="$(sg_select "Which TFC projects should be migrated?" "pick|some of them, by name (currently: $(_w_csv "$prev_projects"))" "all|every project ($prn)")" || return 1
+    fi
+    if [ "$pick" = "pick" ]; then
+      while :; do
+        names="$(sg_ask_required "Project names (comma-separated; name or slug)")" || return 1
+        # Resolve to the raw project names; unknown entries are re-asked.
+        W_PROJECTS_JSON="$(printf '%s' "$projects" | "$jqb" -c --argjson want "$(_w_csv_json "$names")" '
+          map({name, slug: (.name | ascii_downcase | gsub("[^a-z0-9-]+"; "-"))}) as $pr
+          | [$want[] | . as $w | ($w | ascii_downcase | gsub("[^a-z0-9-]+"; "-")) as $s
+             | ($pr[] | select(.slug == $s) | .name) // ("?" + $w)]')"
+        if printf '%s' "$W_PROJECTS_JSON" | "$jqb" -e 'any(.[]; startswith("?"))' >/dev/null; then
+          sg_warn "no such project: $(printf '%s' "$W_PROJECTS_JSON" | "$jqb" -r '[.[] | select(startswith("?")) | .[1:]] | join(", ")') — projects: $(printf '%s' "$projects" | "$jqb" -r '[.[].name] | join(", ")')"
+          continue
+        fi
+        break
+      done
+    fi
+  elif [ "$W_TFC_DISCOVERY" -eq 0 ]; then
+    names="$(sg_ask "TFC projects to migrate (comma-separated names; empty = every project)" "$(_w_csv "$prev_projects")")" || return 1
+    [ -n "$names" ] && W_PROJECTS_JSON="$(_w_csv_json "$names")"
   fi
   scope="$(sg_select "Which workspaces should be migrated?" \
     "all|every workspace in the organisation" \
@@ -155,6 +196,12 @@ wizard_tfc() {
   # What the selection looks like (drives the review and the SG step's hints).
   if [ -n "$W_TFC_WS_JSON" ]; then
     sel="$(tfc_select_workspaces "$W_TFC_WS_JSON" "$W_WSNAMES_JSON" "$W_TAGS_JSON" "$W_IGNORE_TAGS_JSON" "${W_IGNORE_NAMES_JSON:-[]}")"
+    # Within the chosen projects only (tfProjects), like the transformer does.
+    if [ "$W_PROJECTS_JSON" != "[]" ]; then
+      sel="$(printf '%s' "$sel" | "$jqb" -c --argjson pr "$projects" --argjson want "$W_PROJECTS_JSON" '
+        ($pr | map(select(.name as $n | $want | index($n) != null) | .id)) as $ids
+        | map(select(.project as $p | $ids | index($p) != null))')"
+    fi
     W_WS_TOTAL="$wsn"
     W_WS_COUNT="$(printf '%s' "$sel" | "$jqb" 'length')"
     W_WS_ABOVE_CEILING="$(printf '%s' "$sel" | "$jqb" '[.[] | select((.terraform_version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | select(((.terraform_version | split(".") | map(tonumber)) as $v | ($v[0] > 1) or ($v[0] == 1 and $v[1] > 5) or ($v[0] == 1 and $v[1] == 5 and $v[2] > 7)))] | length')"
@@ -545,6 +592,11 @@ wizard_review() {
   fi
   if [ -n "${W_WS_COUNT:-}" ]; then
     if [ "${W_SCOPE:-all}" = "all" ] && [ "${W_IGNORE_NAMES_JSON:-[]}" = "[]" ]; then scope="$scope ($W_WS_COUNT)"; else scope="$scope — $W_WS_COUNT of $W_WS_TOTAL match"; fi
+  fi
+  if [ "${W_PROJECTS_JSON:-[]}" = "[]" ]; then
+    sg_row "TFC projects" "all (tfProjects = [])"
+  else
+    sg_row "TFC projects" "$(_w_csv "$W_PROJECTS_JSON")"
   fi
   sg_row "Workspaces" "$scope"
   if [ -n "${W_PROJECT_ROWS:-}" ]; then

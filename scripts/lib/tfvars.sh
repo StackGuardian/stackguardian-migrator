@@ -117,7 +117,7 @@ _tfvars_str() {
 # wizard (lists/objects are passed as compact JSON, which HCL accepts). Keeps
 # the same order and comments as terraform.tfvars.example so the file stays
 # hand-editable afterwards.
-#   W_TFORG W_TFHOST W_WSNAMES_JSON W_TAGS_JSON W_IGNORE_TAGS_JSON W_IGNORE_NAMES_JSON W_EXPORT_STATE
+#   W_TFORG W_TFHOST W_PROJECTS_JSON W_WSNAMES_JSON W_TAGS_JSON W_IGNORE_TAGS_JSON W_IGNORE_NAMES_JSON W_EXPORT_STATE
 #   W_APPROVERS_JSON W_REPO_PREFIX W_VCS_INTEGRATION W_DPC_JSON W_RUNNER_JSON
 #   W_DEST_KIND W_TF_SOURCE W_TF_VERSION W_TRIGGERS W_IGNORE_PATTERNS_JSON
 #   W_STRIP_CLOUD W_PROJECT_OVERRIDES_JSON W_WS_OVERRIDES_JSON
@@ -155,6 +155,10 @@ tfWorkspaceIgnoreTags = $W_IGNORE_TAGS_JSON
 # Exclude workspaces by name (globs, e.g. ["sandbox-*", "*-scratch"]); applied after
 # the filters above. sg-migrate.sh --exclude-workspace adds to this list for one run.
 tfWorkspaceIgnoreNames = ${W_IGNORE_NAMES_JSON:-[]}
+
+# Only these TFC projects, by name ([] = every project; each project becomes one
+# workflow group). sg-migrate.sh --project narrows a single run further.
+tfProjects = ${W_PROJECTS_JSON:-[]}
 
 # Directory to export Terraform files to
 exportPath = "export"
