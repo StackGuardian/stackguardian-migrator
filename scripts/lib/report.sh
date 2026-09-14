@@ -31,14 +31,20 @@ show_migration_summary() {
   local src def
   src="$("$jqb" -r '.terraformVersionSource // "carry"' "$f")"
   def="$("$jqb" -r '.terraformVersionDefault // empty' "$f")"
-  if [ "$src" = "preset" ]; then
-    sg_row "Terraform version" "none sent; the org's execution preset applies at import"
-  elif [ -z "$def" ]; then
-    sg_row "Terraform version" "carried from TFC; unpinned or rejected pins go to the execution preset"
+  local runners_preset=0
+  [ "$("$jqb" -r '.runnerConstraintsSource // "config"' "$f")" = "preset" ] && runners_preset=1
+  if [ "$src" = "preset" ] && [ "$runners_preset" -eq 1 ]; then
+    sg_row "Version & runners" "left to the org's execution preset (applied at import)"
   else
-    sg_row "Terraform version" "carried from TFC; fallback ${def#TERRAFORM-} for unpinned or rejected pins"
+    if [ "$src" = "preset" ]; then
+      sg_row "Terraform version" "none sent; the org's execution preset applies at import"
+    elif [ -z "$def" ]; then
+      sg_row "Terraform version" "carried from TFC; unpinned or rejected pins go to the execution preset"
+    else
+      sg_row "Terraform version" "carried from TFC; fallback ${def#TERRAFORM-} for unpinned or rejected pins"
+    fi
+    [ "$runners_preset" -eq 1 ] && sg_row "Runners" "none sent; the org's execution preset applies at import"
   fi
-  [ "$("$jqb" -r '.runnerConstraintsSource // "config"' "$f")" = "preset" ] && sg_row "Runners" "none sent; the org's execution preset applies at import"
 
   _summary_section "$f" '.skippedSensitiveVars' "Sensitive variables skipped" \
     'to_entries[] | "\(.key): \(.value | join(", "))"' "TFC never exposes their values; they become placeholder SG secrets after import"
