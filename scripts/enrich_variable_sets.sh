@@ -10,6 +10,8 @@
 # vars can't be read from the API and are skipped + reported.
 #
 # Usage: enrich_variable_sets.sh <org> <payload.json> [more.json ...]
+# Output: one line naming the sets and one per payload that gained variables;
+# SG_VERBOSE=1 adds the fetch step and each set's scope and size.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +22,7 @@ source "$SCRIPT_DIR/lib/tfvars.sh"
 # shellcheck source=lib/tfc_api.sh
 source "$SCRIPT_DIR/lib/tfc_api.sh"
 TFVARS="${TFVARS:-$SG_REPO_ROOT/transformer/terraform-cloud/terraform.tfvars}"
+VERBOSE="${SG_VERBOSE:-0}"
 
 ORG="${1:-}"
 shift || true
@@ -48,7 +51,7 @@ trap 'rm -rf "$WORK"' EXIT
 # fetch_all <path> — paginated GET, merged .data array (lib/tfc_api.sh).
 fetch_all() { tfc_get_all "$1"; }
 
-sg_log "fetching workspaces and variable sets from $HOST (org: $ORG)..."
+[ "$VERBOSE" -eq 1 ] && sg_log "fetching workspaces and variable sets from $HOST (org: $ORG)..."
 
 # name -> {id, project}
 fetch_all "organizations/$ORG/workspaces" |
@@ -78,9 +81,11 @@ if [ "$set_count" -eq 0 ]; then
   sg_log "no variable sets found; nothing to enrich"
   exit 0
 fi
-sg_log "resolving $set_count variable set(s) across workspaces:"
-# One line per set: name, scope, size — so it is clear where merged vars come from.
-"$JQ_BIN" -r '.[] | "  - \(.name): \(if .global then "global" else ([(if (.projids | length) > 0 then "\(.projids | length) project(s)" else empty end), (if (.wsids | length) > 0 then "\(.wsids | length) workspace(s)" else empty end)] | if length == 0 then "unassigned" else join(", ") end) end), \(.vars | length) var(s)\(if .priority then ", priority" else "" end)"' "$WORK/sets.json" >&2
+# The sets by name; with -v one line per set (scope, size) so it is clear
+# where merged vars come from.
+set_names="$("$JQ_BIN" -r '[.[].name] | if length > 6 then (.[:6] | join(", ")) + ", ... \(length - 6) more" else join(", ") end' "$WORK/sets.json")"
+[ "$VERBOSE" -eq 1 ] && sg_log "resolving $set_count variable set(s) across workspaces:"
+[ "$VERBOSE" -eq 1 ] && "$JQ_BIN" -r '.[] | "  - \(.name): \(if .global then "global" else ([(if (.projids | length) > 0 then "\(.projids | length) project(s)" else empty end), (if (.wsids | length) > 0 then "\(.wsids | length) workspace(s)" else empty end)] | if length == 0 then "unassigned" else join(", ") end) end), \(.vars | length) var(s)\(if .priority then ", priority" else "" end)"' "$WORK/sets.json" >&2
 
 # Per workspace -> list of winning vars (set-vs-set precedence resolved; tagged
 # with priority + sensitive + conflict). rank: non-priority global/proj/ws = 1/2/3,
@@ -126,7 +131,10 @@ CLOUD_JSON="$(tfvars_get_json .cloudAuthVarPatterns)"
 "$JQ_BIN" -s '[.[][] | {key: ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")),
                          value: ((.DeploymentPlatformConfig[0].kind // "") | split("_")[0])}] | from_entries' "$@" >"$WORK/cloud.json"
 
-# Merge the effective set vars into each payload, then report counts.
+# Merge the effective set vars into each payload, then report counts: the
+# files that gained variables get a line each, the rest are only counted.
+unchanged=0
+changed_lines=()
 for f in "$@"; do
   before_tf="$("$JQ_BIN" '[.[].VCSConfig.iacInputData.data | length] | add // 0' "$f")"
   before_env="$("$JQ_BIN" '[.[].EnvironmentVariables | length] | add // 0' "$f")"
@@ -158,11 +166,19 @@ for f in "$@"; do
   after_tf="$("$JQ_BIN" '[.[].VCSConfig.iacInputData.data | length] | add // 0' "$f")"
   after_env="$("$JQ_BIN" '[.[].EnvironmentVariables | length] | add // 0' "$f")"
   if [ "$((after_tf - before_tf + after_env - before_env))" -eq 0 ]; then
-    sg_log "$(basename "$f"): no new variables (sets only override or add nothing here)"
+    unchanged=$((unchanged + 1))
   else
-    sg_log "$(basename "$f"): +$((after_tf - before_tf)) terraform, +$((after_env - before_env)) env var(s) from variable sets"
+    changed_lines+=("$(basename "$f"): +$((after_tf - before_tf)) terraform, +$((after_env - before_env)) env var(s) from variable sets")
   fi
 done
+if [ "$unchanged" -eq 0 ]; then
+  sg_log "$set_count variable set(s) resolved ($set_names)"
+elif [ "$unchanged" -eq "$#" ]; then
+  sg_log "$set_count variable set(s) resolved ($set_names); no new variables for the exported workspaces (the sets only override or add nothing here)"
+else
+  sg_log "$set_count variable set(s) resolved ($set_names); $unchanged payload file(s) gained nothing"
+fi
+for line in ${changed_lines[@]+"${changed_lines[@]}"}; do sg_log "$line"; done
 
 # Report cloud credential set vars stripped (the connector provides them),
 # then sensitive set vars (cannot be migrated; stripped ones excluded) and key
