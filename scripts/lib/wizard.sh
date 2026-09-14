@@ -75,7 +75,7 @@ wizard_tfc() {
   local host token orgs n ws projects wsn prn scope tags alltags sel prov cnt prefix kind
   local jqb
   jqb="$(sg_resolve jq sg_ensure_jq)"
-  sg_step "1/4 Terraform Cloud / Enterprise"
+  sg_step "1/5 Terraform Cloud / Enterprise"
   host="$(sg_ask "TFC/TFE hostname" "$(_w_default .tfHostname app.terraform.io)")" || return 1
   W_TFHOST="$host"
   # shellcheck disable=SC2034  # consumed by tfc_http (lib/tfc_api.sh)
@@ -115,13 +115,14 @@ wizard_tfc() {
   W_TFC_VCS_KINDS=""
   W_TFC_REPO_PREFIX=""
   W_TFC_VCS_OTHER=0
+  W_SEL_PROJECTS_JSON='[]'
   projects='[]'
   if [ "$W_TFC_DISCOVERY" -eq 1 ] && ws="$(tfc_list_workspaces "$W_TFORG" 2>/dev/null)"; then
     W_TFC_WS_JSON="$ws"
     wsn="$(printf '%s' "$ws" | "$jqb" 'length')"
     projects="$(tfc_list_projects "$W_TFORG" 2>/dev/null || echo '[]')"
     prn="$(printf '%s' "$projects" | "$jqb" 'length')"
-    sg_log "found $wsn workspace(s) in $prn project(s); each project becomes SG workflow group tfc-<project>"
+    sg_log "found $wsn workspace(s) in $prn project(s); each project becomes an SG workflow group (tfc-<project> unless you choose otherwise)"
     [ "$prn" -le 8 ] && [ "$wsn" -gt 0 ] && sg_dim "$(_w_project_counts "$ws" "$projects" 0)"
     alltags="$(printf '%s' "$ws" | "$jqb" -r '[.[].tags[]?] | unique | join(", ")')"
   else
@@ -157,6 +158,12 @@ wizard_tfc() {
     W_WS_COUNT="$(printf '%s' "$sel" | "$jqb" 'length')"
     W_WS_ABOVE_CEILING="$(printf '%s' "$sel" | "$jqb" '[.[] | select((.terraform_version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | select(((.terraform_version | split(".") | map(tonumber)) as $v | ($v[0] > 1) or ($v[0] == 1 and $v[1] > 5) or ($v[0] == 1 and $v[1] == 5 and $v[2] > 7)))] | length')"
     W_GROUPS="$(_w_project_counts "$sel" "$projects" 1)"
+    # The selected projects (raw name, payload segment, workspace count), most
+    # workspaces first — drives the per-project step and the review.
+    W_SEL_PROJECTS_JSON="$(printf '%s' "$sel" | "$jqb" -c --argjson pr "$projects" '
+      ($pr | map({key: .id, value: .name}) | from_entries) as $names
+      | group_by(.project) | map({id: .[0].project, name: ($names[.[0].project] // .[0].project), count: length})
+      | map(. + {segment: (.name | ascii_downcase | gsub("[^a-z0-9-]+"; "-"))}) | sort_by(-.count)' 2>/dev/null || echo '[]')"
     if [ "$scope" != "all" ]; then
       if [ "$W_WS_COUNT" -eq 0 ]; then
         sg_warn "no workspace matches that selection — 'apply' would export nothing"
@@ -185,7 +192,7 @@ wizard_tfc() {
 wizard_sg() {
   local ints vcs cloud pick kind name runner groups jqb hint prov cnt prefix prev_kind prev_prefix line k
   jqb="$(sg_resolve jq sg_ensure_jq)"
-  sg_step "2/4 StackGuardian"
+  sg_step "2/5 StackGuardian"
   if [ -z "$ORG" ]; then
     ORG="$(sg_ask_required "StackGuardian organisation")" || return 1
   else
@@ -225,6 +232,9 @@ wizard_sg() {
     done <<<"$(printf '%s' "$ints" | "$jqb" -r '[.[] | select((.type // "") | IN("GITHUB_COM","GITHUB_APP_CUSTOM","GITLAB_COM","GITLAB_OAUTH_SSH","BITBUCKET_ORG","AZURE_DEVOPS","AZURE_DEVOPS_SP","GIT_OTHER"))] | sort_by(.name) | .[] | "\(.name)|\(.type)"')"
     vcs="$(printf '%s\n' ${first[@]+"${first[@]}"} ${rest[@]+"${rest[@]}"})"
   fi
+  # Kept for the per-project step (same lists, same connector table).
+  W_SG_INTS="${ints:-[]}"
+  W_VCS_LIST="$vcs"
   if [ -n "$vcs" ]; then
     pick="$(_w_select_lines "Which VCS connector should clone the repositories?" "$vcs")" || return 1
     kind="$(sg_integration_type "$ints" "$pick")"
@@ -266,6 +276,7 @@ wizard_sg() {
   cloud=""
   # Only kinds DeploymentPlatformConfig accepts (AZURE_DEVOPS* are VCS connectors).
   [ "$W_SG_DISCOVERY" -eq 1 ] && cloud="$(printf '%s' "$ints" | "$jqb" -r '[.[] | select((.type // "") | IN("AWS_STATIC","AWS_RBAC","AWS_OIDC","AZURE_STATIC","AZURE_OIDC","AZURE_MANAGED_ID_OIDC","GCP_STATIC","GCP_OIDC"))] | sort_by(.type, .name) | .[] | "\(.name)|\(.type)"')"
+  W_CLOUD_LIST="$cloud"
   if [ -n "$cloud" ]; then
     pick="$(_w_select_lines "Which cloud connector should the workflows deploy with?" "$cloud" "skip|decide later (leaves a placeholder to edit)")" || return 1
     kind="$(sg_integration_type "$ints" "$pick")"
@@ -337,9 +348,139 @@ wizard_sg() {
   fi
 }
 
-# --- step 3: policy ------------------------------------------------------------
+# --- step 3: per-project settings -----------------------------------------------
+# Connectors and the workflow group per TFC project (projectOverrides in
+# terraform.tfvars). Asked only when more than one project is selected; a
+# re-run that already has entries defaults to reviewing them. "same as the
+# default" removes the key, so the global value flows through; fields the
+# wizard does not manage (Approvers, RunnerConstraints, ...) are kept as
+# written. Every prompt is sg_select/sg_confirm/sg_ask, so -y and
+# SG_ANSWERS_FILE keep working.
+
+# _w_first <lines> <value> — move the "value|..." item to the top (pre-select).
+_w_first() {
+  local lines="$1" v="$2" line first="" rest=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "${line%%|*}" = "$v" ] && [ -z "$first" ]; then first="$line"; else rest="$rest${rest:+$'\n'}$line"; fi
+  done <<<"$lines"
+  printf '%s' "${first:+$first$'\n'}$rest"
+}
+
+wizard_projects() {
+  local jqb n existing def i name segment count prev items pick kind grp groups entry dels desc cur
+  jqb="$(sg_resolve jq sg_ensure_jq)"
+  W_PROJECT_OVERRIDES_JSON="$(tfvars_get_json .projectOverrides)"
+  [ "$W_PROJECT_OVERRIDES_JSON" = "null" ] && W_PROJECT_OVERRIDES_JSON='{}'
+  W_PROJECT_ROWS=""
+  sg_step "3/5 Projects"
+  n="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" 'length')"
+  existing="$(printf '%s' "$W_PROJECT_OVERRIDES_JSON" | "$jqb" 'length')"
+  if [ "$n" -eq 0 ]; then
+    sg_log "the TFC projects could not be listed — per-project settings can be added as projectOverrides in $(sg_rel "$TFVARS")"
+    [ "$existing" -gt 0 ] && sg_log "keeping the $existing projectOverrides entr(y/ies) already in the file"
+    return 0
+  fi
+  for ((i = 0; i < n; i++)); do
+    IFS=$'\t' read -r name segment count <<<"$(printf '%s' "$W_SEL_PROJECTS_JSON" | "$jqb" -r --argjson i "$i" '.[$i] | [.name, .segment, .count] | @tsv')"
+    grp="$(printf '%s' "$W_PROJECT_OVERRIDES_JSON" | "$jqb" -r --arg p "$name" '.[$p].workflowGroup // empty')"
+    sg_dim "  $name ($count workspace(s)) -> workflow group ${grp:-tfc-$segment}${grp:+ (from projectOverrides)}"
+  done
+  if [ "$n" -eq 1 ]; then
+    [ "$existing" -gt 0 ] && sg_log "keeping the $existing projectOverrides entr(y/ies) already in the file"
+    return 0
+  fi
+  def=Y
+  [ "$existing" -gt 0 ] && def=N
+  if sg_confirm "Use these connectors and the tfc-<project> groups for all $n projects?" "$def"; then
+    [ "$existing" -gt 0 ] && sg_log "keeping the $existing projectOverrides entr(y/ies) already in the file"
+    return 0
+  fi
+  groups=""
+  [ "$W_SG_DISCOVERY" -eq 1 ] && groups="$(sg_list_wfgrps 2>/dev/null | "$jqb" -r 'sort | .[]' 2>/dev/null || true)"
+  for ((i = 0; i < n; i++)); do
+    IFS=$'\t' read -r name segment count <<<"$(printf '%s' "$W_SEL_PROJECTS_JSON" | "$jqb" -r --argjson i "$i" '.[$i] | [.name, .segment, .count] | @tsv')"
+    sg_log "project '$name' ($count workspace(s))"
+    prev="$(printf '%s' "$W_PROJECT_OVERRIDES_JSON" | "$jqb" -c --arg p "$name" '.[$p] // {}')"
+    entry='{}'
+    dels='[]'
+    desc=""
+
+    # Cloud connector: the default, or one of the org's cloud connectors.
+    cur="$(printf '%s' "$prev" | "$jqb" -r '.DeploymentPlatformConfig[0].config.integrationId // empty')"
+    cur="${cur#/integrations/}"
+    if [ -n "${W_CLOUD_LIST:-}" ]; then
+      items="global|same as the default (${W_CLOUD_DESC:-not set})"$'\n'"$W_CLOUD_LIST"
+      [ -n "$cur" ] && items="$(_w_first "$items" "$cur")"
+      pick="$(_w_select_lines "Cloud connector for '$name'?" "$items")" || return 1
+      kind="$(sg_integration_type "$W_SG_INTS" "$pick")"
+    else
+      pick="$(sg_ask "Cloud connector for '$name' (name as in StackGuardian; empty = same as the default)" "$cur")" || return 1
+      kind=""
+      [ -z "$pick" ] && pick="global"
+    fi
+    if [ "$pick" = "global" ]; then
+      dels="$(printf '%s' "$dels" | "$jqb" -c '. + ["DeploymentPlatformConfig"]')"
+    else
+      [ -n "$kind" ] || kind="$(sg_select "Connector kind of '$pick'" AWS_RBAC AWS_STATIC AWS_OIDC AZURE_STATIC AZURE_OIDC AZURE_MANAGED_ID_OIDC GCP_STATIC GCP_OIDC)" || return 1
+      entry="$(printf '%s' "$entry" | "$jqb" -c --arg k "$kind" --arg i "/integrations/${pick#/integrations/}" '.DeploymentPlatformConfig = [{kind: $k, config: {integrationId: $i}}]')"
+      desc="cloud: ${pick#/integrations/} ($kind)"
+    fi
+
+    # VCS connector: the default, or another connector (kind and repo prefix follow).
+    cur="$(printf '%s' "$prev" | "$jqb" -r '.vcsAuthIntegrationID // empty')"
+    cur="${cur#/integrations/}"
+    if [ -n "${W_VCS_LIST:-}" ]; then
+      items="global|same as the default (${W_VCS_INTEGRATION#/integrations/})"$'\n'"$W_VCS_LIST"
+      [ -n "$cur" ] && items="$(_w_first "$items" "$cur")"
+      pick="$(_w_select_lines "VCS connector for '$name'?" "$items")" || return 1
+      kind="$(sg_vcs_kind_of "$(sg_integration_type "$W_SG_INTS" "$pick")")"
+    else
+      pick="$(sg_ask "VCS connector for '$name' (name as in StackGuardian; empty = same as the default)" "$cur")" || return 1
+      kind=""
+      [ -z "$pick" ] && pick="global"
+    fi
+    if [ "$pick" = "global" ]; then
+      dels="$(printf '%s' "$dels" | "$jqb" -c '. + ["vcsAuthIntegrationID", "sourceConfigDestKind", "vcsRepoPrefix"]')"
+    else
+      [ -n "$kind" ] || kind="$(sg_select "VCS provider kind of '$pick'" GITHUB_COM GITLAB_COM BITBUCKET_ORG AZURE_DEVOPS GIT_OTHER)" || return 1
+      entry="$(printf '%s' "$entry" | "$jqb" -c --arg i "/integrations/${pick#/integrations/}" '.vcsAuthIntegrationID = $i')"
+      if [ "$kind" != "$W_DEST_KIND" ]; then
+        entry="$(printf '%s' "$entry" | "$jqb" -c --arg k "$kind" --arg p "$(_w_repo_prefix_for "$kind")" '.sourceConfigDestKind = $k | .vcsRepoPrefix = $p')"
+        [ -n "${W_TFC_VCS_KINDS:-}" ] && ! _w_tfc_kind_matches "$kind" && sg_warn "the TFC workspaces are connected to $(tfc_vcs_label_for "${W_TFC_VCS%%	*}") but '$pick' is a $kind connector"
+      else
+        dels="$(printf '%s' "$dels" | "$jqb" -c '. + ["sourceConfigDestKind", "vcsRepoPrefix"]')"
+      fi
+      desc="$desc${desc:+ · }VCS: ${pick#/integrations/} ($kind)"
+    fi
+
+    # Workflow group: the default tfc-<project>, an existing group, or a new name.
+    cur="$(printf '%s' "$prev" | "$jqb" -r '.workflowGroup // empty')"
+    items="default|tfc-$segment (created if it does not exist)"
+    [ -n "$groups" ] && items="$items"$'\n'"$(printf '%s\n' "$groups" | grep -v -x -F "tfc-$segment" | sed 's/$/|existing workflow group/')"
+    items="$items"$'\n'"new|another name (typed; created if it does not exist)"
+    if [ -n "$cur" ] && [ "$cur" != "tfc-$segment" ]; then
+      if printf '%s\n' "$groups" | grep -q -x -F "$cur"; then items="$(_w_first "$items" "$cur")"; else items="$cur|from the current tfvars (created if it does not exist)"$'\n'"$items"; fi
+    fi
+    grp="$(_w_select_lines "Workflow group for '$name'?" "$items")" || return 1
+    [ "$grp" = "new" ] && { grp="$(sg_ask_required "Workflow group name for '$name'")" || return 1; }
+    if [ "$grp" = "default" ] || [ "$grp" = "tfc-$segment" ]; then
+      dels="$(printf '%s' "$dels" | "$jqb" -c '. + ["workflowGroup"]')"
+    else
+      entry="$(printf '%s' "$entry" | "$jqb" -c --arg g "$grp" '.workflowGroup = $g')"
+      desc="$desc${desc:+ · }group: $grp"
+    fi
+
+    # Merge: unmanaged fields of the existing entry stay; "global" picks delete.
+    W_PROJECT_OVERRIDES_JSON="$(printf '%s' "$W_PROJECT_OVERRIDES_JSON" | "$jqb" -c --arg p "$name" --argjson e "$entry" --argjson d "$dels" \
+      '.[$p] = (((.[$p] // {}) | delpaths([$d[] | [.]])) + $e) | if .[$p] == {} then del(.[$p]) else . end')"
+    W_PROJECT_ROWS="$W_PROJECT_ROWS${W_PROJECT_ROWS:+$'\n'}$name|${desc:-defaults}"
+  done
+}
+
+# --- step 4: policy ------------------------------------------------------------
 wizard_policy() {
-  sg_step "3/4 Workflow defaults"
+  sg_step "4/5 Workflow defaults"
   # Approvers, repo prefix and the fallback Terraform version are plain values
   # with sensible defaults — edit them in terraform.tfvars if needed.
   W_APPROVERS_JSON="$(tfvars_get_json .SGDefaultWfApprovers)"
@@ -378,12 +519,18 @@ wizard_policy() {
   else
     W_IGNORE_PATTERNS_JSON='[]'
   fi
+  sg_dim "Cloud credential env variables (ARM_CLIENT_SECRET, AWS_ACCESS_KEY_ID, GOOGLE_CREDENTIALS, ...) are provided by the workflow's cloud connector in StackGuardian."
+  if sg_confirm "Strip the cloud credential variables the cloud connector replaces?" "$([ "$(_w_default .stripCloudAuthVars true)" = "false" ] && echo N || echo Y)"; then
+    W_STRIP_CLOUD=true
+  else
+    W_STRIP_CLOUD=false
+  fi
 }
 
-# --- step 4: review + write ----------------------------------------------------
+# --- step 5: review + write ----------------------------------------------------
 wizard_review() {
-  local scope tf yn_state yn_trig strip
-  sg_step "4/4 Review"
+  local scope tf yn_state yn_trig strip line k
+  sg_step "5/5 Review"
   sg_row "TFC" "$W_TFHOST / $W_TFORG"
   case "${W_SCOPE:-all}" in
   tags) scope="workspaces tagged $(_w_csv "$W_TAGS_JSON")" ;;
@@ -395,7 +542,15 @@ wizard_review() {
     if [ "${W_SCOPE:-all}" = "all" ]; then scope="$scope ($W_WS_COUNT)"; else scope="$scope — $W_WS_COUNT of $W_WS_TOTAL match"; fi
   fi
   sg_row "Workspaces" "$scope"
-  [ -n "${W_GROUPS:-}" ] && sg_row "Workflow groups" "$W_GROUPS"
+  if [ -n "${W_PROJECT_ROWS:-}" ]; then
+    while IFS='|' read -r k line; do [ -n "$k" ] && sg_row "Project '$k'" "$line"; done <<<"$W_PROJECT_ROWS"
+  elif [ -n "${W_GROUPS:-}" ]; then
+    sg_row "Workflow groups" "$W_GROUPS"
+  fi
+  k="$(printf '%s' "${W_PROJECT_OVERRIDES_JSON:-{\}}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
+  [ -z "${W_PROJECT_ROWS:-}" ] && [ "$k" -gt 0 ] && sg_row "Project settings" "$k projectOverrides entr(y/ies) kept from the current file"
+  k="$(printf '%s' "${W_WS_OVERRIDES_JSON:-{\}}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
+  [ "$k" -gt 0 ] && sg_row "Workspace overrides" "$k workspaceOverrides entr(y/ies) kept from the current file"
   sg_row "StackGuardian org" "$ORG"
   sg_row "VCS connector" "${W_VCS_INTEGRATION#/integrations/} ($W_DEST_KIND) — repositories under $W_REPO_PREFIX"
   sg_row "Cloud connector" "$W_CLOUD_DESC"
@@ -404,8 +559,9 @@ wizard_review() {
   [ "$W_TRIGGERS" = "true" ] && yn_trig="yes, from each workspace's TFC settings" || yn_trig=no
   sg_row "State export" "$yn_state"
   sg_row "VCS triggers" "$yn_trig"
-  [ "$W_IGNORE_PATTERNS_JSON" = "[]" ] && strip="none" || strip="TFC_*, TFE_*"
-  sg_row "Strip variables" "$strip"
+  [ "$W_IGNORE_PATTERNS_JSON" = "[]" ] && strip="" || strip="TFC_*, TFE_*"
+  [ "${W_STRIP_CLOUD:-true}" = "true" ] && strip="$strip${strip:+; }cloud credentials of the connector's kind (ARM_*, AWS_ACCESS_KEY_ID, ...)"
+  sg_row "Strip variables" "${strip:-none}"
   if [ "${W_TF_SOURCE:-carry}" = "preset" ]; then
     tf="from the org's execution preset${W_PRESET_TFVER:+ (now: $W_PRESET_TFVER)}"
   else
@@ -418,7 +574,7 @@ wizard_review() {
   fi
   sg_row "Terraform version" "$tf"
   [ "${W_DPC_PLACEHOLDER:-0}" -eq 1 ] && sg_warn "cloud connector left as a placeholder — edit SGDefaultDeploymentPlatformConfig in $(sg_rel "$TFVARS") before 'apply'"
-  [ "${W_TFC_VCS_OTHER:-0}" -gt 0 ] && sg_warn "$W_TFC_VCS_OTHER workspace(s) use a different VCS provider than the default above — give them their own connector/prefix via workspaceOverrides in $(sg_rel "$TFVARS")"
+  [ "${W_TFC_VCS_OTHER:-0}" -gt 0 ] && sg_warn "$W_TFC_VCS_OTHER workspace(s) use a different VCS provider than the default above — give them their own connector/prefix via projectOverrides or workspaceOverrides in $(sg_rel "$TFVARS")"
   sg_dim "approvers and the repo URL prefix can be edited in $(sg_rel "$TFVARS")"
   sg_confirm "Write $(sg_rel "$TFVARS")?" Y
 }
@@ -426,7 +582,11 @@ wizard_review() {
 # wizard_run — the whole flow; returns non-zero when aborted.
 wizard_run() {
   local kept=""
-  wizard_tfc && wizard_sg && wizard_policy || { sg_err "init aborted"; return 1; }
+  # Hand-written override blocks survive the rewrite (read before writing: the
+  # tfvars cache is invalidated by tfvars_write).
+  W_WS_OVERRIDES_JSON="$(tfvars_get_json .workspaceOverrides)"
+  [ "$W_WS_OVERRIDES_JSON" = "null" ] && W_WS_OVERRIDES_JSON='{}'
+  wizard_tfc && wizard_sg && wizard_projects && wizard_policy || { sg_err "init aborted"; return 1; }
   wizard_review || { sg_log "nothing written"; return 1; }
   if [ -f "$TFVARS" ]; then
     cp "$TFVARS" "$TFVARS.bak"

@@ -58,6 +58,26 @@ tfvars_valid() {
 # _tfvars_hcl <json> — pretty-print a JSON value so it reads like HCL in the file.
 _tfvars_hcl() { printf '%s' "$1" | "$(sg_resolve jq sg_ensure_jq)" --indent 2 '.' 2>/dev/null || printf '%s' "$1"; }
 
+# _tfvars_map <json-object> — a name-keyed HCL map, one entry per key:
+#   "Project Name" = {
+#     workflowGroup = "platform-prod"
+#     DeploymentPlatformConfig = [{"kind":"AWS_RBAC","config":{...}}]
+#   }
+# Attribute values are emitted as JSON, which HCL accepts and hcl2json
+# round-trips (tfvars_valid); ${ and %{ inside strings are escaped like
+# _tfvars_str does. "{}" for an empty or missing object.
+_tfvars_map() {
+  local j="${1:-}" out
+  [ -n "$j" ] && [ "$j" != "null" ] || j='{}'
+  out="$(printf '%s' "$j" | "$(sg_resolve jq sg_ensure_jq)" -r '
+    def hcl: tojson | gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{");
+    if (. // {}) == {} then "{}" else
+      "{\n" + ([to_entries[] | "  \(.key | tojson) = {\n"
+        + ([.value | to_entries[] | "    \(.key) = \(.value | hcl)"] | join("\n")) + "\n  }"] | join("\n")) + "\n}"
+    end' 2>/dev/null)" || out=""
+  printf '%s' "${out:-\{\}}"
+}
+
 # _tfvars_str <text> — a quoted HCL string literal (backslashes, quotes and
 # template sequences escaped, so any connector or org name round-trips).
 _tfvars_str() {
@@ -76,8 +96,10 @@ _tfvars_str() {
 #   W_TFORG W_TFHOST W_WSNAMES_JSON W_TAGS_JSON W_IGNORE_TAGS_JSON W_EXPORT_STATE
 #   W_APPROVERS_JSON W_REPO_PREFIX W_VCS_INTEGRATION W_DPC_JSON W_RUNNER_JSON
 #   W_DEST_KIND W_TF_SOURCE W_TF_VERSION W_TRIGGERS W_IGNORE_PATTERNS_JSON
+#   W_STRIP_CLOUD W_PROJECT_OVERRIDES_JSON W_WS_OVERRIDES_JSON
 # W_RUNNER_JSON and W_TF_VERSION may be the literal "null" (defer to the org's
-# execution preset).
+# execution preset). The two override maps are re-rendered from JSON, so a
+# hand-written block survives a re-run of the wizard (its inner comments do not).
 tfvars_write() {
   local dest="$1" host_line="" tf_version_hcl
   if [ "${W_TF_VERSION:-null}" = "null" ]; then tf_version_hcl="null"; else tf_version_hcl="$(_tfvars_str "$W_TF_VERSION")"; fi
@@ -109,6 +131,11 @@ exportPath = "export"
 # TFC/TFE-specific variables that are not migrated (regexes on the variable
 # name), e.g. TFC_WORKSPACE_NAME or TFC_AWS_RUN_ROLE_ARN. [] keeps everything.
 ignoreVarPatterns = $W_IGNORE_PATTERNS_JSON
+
+# Cloud credential env variables (ARM_*, AWS_ACCESS_KEY_ID, GOOGLE_CREDENTIALS,
+# ...) are replaced by each workflow's cloud connector and are not migrated;
+# the family follows the connector kind. See cloudAuthVarPatterns in variables.tf.
+stripCloudAuthVars = ${W_STRIP_CLOUD:-true}
 
 # Emails of the users who must approve plans (approvalPreApply is set for
 # workspaces without auto-apply)
@@ -148,16 +175,17 @@ SGDefaultEnableVCSTriggers = $W_TRIGGERS
 # Re-pull state for every workspace on each apply (default: idempotent)
 forceStateRefresh = false
 
-# Per-workspace overrides, keyed by workspace name. Any field set here wins over
-# the SGDefault* value above, for that workspace only. See terraform.tfvars.example
-# for every supported field.
-# workspaceOverrides = {
-#   "prod-networking" = {
-#     RunnerConstraints = { "type" : "private", "names" : ["sg-runner"] }
-#     Approvers         = ["lead@example.com"]
-#     terraformVersion  = "TERRAFORM-1.5.7"
-#   }
-# }
+# Per-project settings, keyed by the TFC project name: connectors, runners,
+# approvers and the workflow group (workflowGroup, default tfc-<project>) for
+# every workspace of that project. Precedence: workspaceOverrides >
+# projectOverrides > SGDefault*. See terraform.tfvars.example for every field.
+projectOverrides = $(_tfvars_map "${W_PROJECT_OVERRIDES_JSON:-}")
+
+# Per-workspace overrides, keyed by workspace name; they win over the project
+# and default values for that workspace only. Fields: DeploymentPlatformConfig,
+# RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix,
+# sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers.
+workspaceOverrides = $(_tfvars_map "${W_WS_OVERRIDES_JSON:-}")
 TFVARS
   tfvars_invalidate
 }
