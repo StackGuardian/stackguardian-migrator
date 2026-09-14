@@ -604,9 +604,9 @@ wizard_review() {
   elif [ -n "${W_GROUPS:-}" ]; then
     sg_row "Workflow groups" "$W_GROUPS"
   fi
-  k="$(printf '%s' "${W_PROJECT_OVERRIDES_JSON:-{\}}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
+  k="$(printf '%s' "${W_PROJECT_OVERRIDES_JSON:-"{}"}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
   [ -z "${W_PROJECT_ROWS:-}" ] && [ "$k" -gt 0 ] && sg_row "Project settings" "$k projectOverrides entr(y/ies) kept from the current file"
-  k="$(printf '%s' "${W_WS_OVERRIDES_JSON:-{\}}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
+  k="$(printf '%s' "${W_WS_OVERRIDES_JSON:-"{}"}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
   [ "$k" -gt 0 ] && sg_row "Workspace overrides" "$k workspaceOverrides entr(y/ies) kept from the current file"
   sg_row "StackGuardian org" "$ORG"
   sg_row "VCS connector" "${W_VCS_INTEGRATION#/integrations/} ($W_DEST_KIND) — repositories under $W_REPO_PREFIX"
@@ -632,7 +632,7 @@ wizard_review() {
   sg_row "Terraform version" "$tf"
   [ "${W_DPC_PLACEHOLDER:-0}" -eq 1 ] && sg_warn "cloud connector left as a placeholder — edit SGDefaultDeploymentPlatformConfig in $(sg_rel "$TFVARS") before 'apply'"
   [ "${W_TFC_VCS_OTHER:-0}" -gt 0 ] && sg_warn "$W_TFC_VCS_OTHER workspace(s) use a different VCS provider than the default above — give them their own connector/prefix via projectOverrides or workspaceOverrides in $(sg_rel "$TFVARS")"
-  k="$(printf '%s' "${W_WS_TEMPLATE_JSON:-{\}}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
+  k="$(printf '%s' "${W_WS_TEMPLATE_JSON:-"{}"}" | "$(sg_resolve jq sg_ensure_jq)" 'length' 2>/dev/null || echo 0)"
   [ "$k" -gt 0 ] && sg_dim "the file also gets a commented, ready-to-uncomment entry per project and per workspace ($k) for later fine-tuning"
   sg_dim "approvers and the repo URL prefix can be edited in $(sg_rel "$TFVARS")"
   sg_confirm "Write $(sg_rel "$TFVARS")?" Y
@@ -650,7 +650,7 @@ wizard_templates() {
   [ "$runner" = "null" ] && runner='{"type":"shared"}'
   tfv="${W_TF_VERSION:-null}"
   [ "$tfv" = "null" ] && tfv="TERRAFORM-1.5.7"
-  W_PROJECT_TEMPLATE_JSON="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" -c --argjson have "${W_PROJECT_OVERRIDES_JSON:-{\}}" \
+  W_PROJECT_TEMPLATE_JSON="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" -c --argjson have "${W_PROJECT_OVERRIDES_JSON:-"{}"}" \
     --argjson dpc "${W_DPC_JSON:-[]}" --arg vcs "${W_VCS_INTEGRATION:-}" --argjson runner "$runner" --argjson appr "${W_APPROVERS_JSON:-[]}" '
     map(select(.name as $n | ($have | has($n)) | not))
     | map({key: .name, value: {workflowGroup: ("tfc-" + .segment), DeploymentPlatformConfig: $dpc, vcsAuthIntegrationID: $vcs, RunnerConstraints: $runner, Approvers: $appr}})
@@ -658,7 +658,7 @@ wizard_templates() {
   W_PROJECT_TEMPLATE_NOTES="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" -c 'map({key: .name, value: "\(.count) workspace(s)"}) | from_entries' 2>/dev/null || echo '{}')"
   # A workspace's template shows what it gets today: its project's override
   # where one exists, else the global pick.
-  W_WS_TEMPLATE_JSON="$(printf '%s' "${W_SEL_WS_JSON:-[]}" | "$jqb" -c --argjson have "${W_WS_OVERRIDES_JSON:-{\}}" --argjson projects "${W_PROJECT_OVERRIDES_JSON:-{\}}" --argjson pr "${W_SEL_PROJECTS_JSON:-[]}" \
+  W_WS_TEMPLATE_JSON="$(printf '%s' "${W_SEL_WS_JSON:-[]}" | "$jqb" -c --argjson have "${W_WS_OVERRIDES_JSON:-"{}"}" --argjson projects "${W_PROJECT_OVERRIDES_JSON:-"{}"}" --argjson pr "${W_SEL_PROJECTS_JSON:-[]}" \
     --argjson dpc "${W_DPC_JSON:-[]}" --arg vcs "${W_VCS_INTEGRATION:-}" --argjson runner "$runner" --argjson appr "${W_APPROVERS_JSON:-[]}" --arg tfv "$tfv" '
     ($pr | map({key: .id, value: .name}) | from_entries) as $names
     | sort_by(.name)

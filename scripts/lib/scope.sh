@@ -138,7 +138,7 @@ scope_tfvar_args() {
   # scope flag on the same variable wins because terraform takes the last -var.
   while IFS= read -r k; do
     [ -n "$k" ] && SCOPE_TFVAR_ARGS+=(-var "$k=$(tfvars_get_json ".$k")")
-  done < <(printf '%s' "${TFVARS_OVERLAY_JSON:-{\}}" | "$JQ_BIN" -r 'keys[]')
+  done < <(printf '%s' "${TFVARS_OVERLAY_JSON:-"{}"}" | "$JQ_BIN" -r 'keys[]')
   [ "${#PROJECT_FILTER[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "tfProjects=$(names_json "${PROJECT_FILTER[@]}")")
   [ "${#WS_FILTER[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "workspacenames=$(names_json "${WS_FILTER[@]}")")
   [ "${#WS_EXCLUDE[@]}" -gt 0 ] && SCOPE_TFVAR_ARGS+=(-var "tfWorkspaceIgnoreNames=$(ws_exclude_json)")

@@ -12,7 +12,10 @@ _TFVARS_JSON_FOR=""
 # values the run actually uses. Objects merge deeply, so an overlay entry for
 # one project keeps the other projectOverrides of the file.
 tfvars_json() {
-  local overlay="${TFVARS_OVERLAY_JSON:-{\}}"
+  # A brace default "${var:-{\}}" is a literal {\} under bash 3.2 (macOS /bin/bash);
+  # "${var:-"{}"}" is the form that works everywhere.
+  local overlay="${TFVARS_OVERLAY_JSON:-}"
+  [ -n "$overlay" ] || overlay='{}'
   if [ -z "$_TFVARS_JSON" ] || [ "$_TFVARS_JSON_FOR" != "$TFVARS|$overlay" ]; then
     if [ -f "$TFVARS" ]; then
       _TFVARS_JSON="$("$(sg_resolve hcl2json sg_ensure_hcl2json)" "$TFVARS" 2>/dev/null || echo '{}')"
@@ -89,7 +92,7 @@ _tfvars_map() {
         | "  \($k | tojson) = {" + (if ($notes[$k] // "") != "" then " # \($notes[$k])" else "" end) + "\n"
         + ([.value | to_entries[] | "    \(.key | pad($w)) = \(.value | hcl)"] | join("\n")) + "\n  }"] | join("\n")) + "\n}"
     end' 2>/dev/null)" || out=""
-  printf '%s' "${out:-\{\}}"
+  printf '%s' "${out:-"{}"}"
 }
 
 # _tfvars_map_commented <json-object> [notes-json] — the map's entries (without
