@@ -54,6 +54,16 @@ The manual, step-by-step flow below remains supported for fine-grained control a
 - Terraform
 - [sg-cli](https://github.com/StackGuardian/sg-cli)
 
+With the orchestrated flow the last two come from the Docker image; only `git` and Docker are needed on the host.
+
+### Windows (WSL 2)
+
+Run the migrator from a WSL 2 distribution (Ubuntu from the Microsoft Store is fine); nothing is needed on the Windows side.
+
+- Install [Docker Desktop](https://docs.docker.com/desktop/features/wsl/) with the WSL 2 backend and enable *WSL integration* for your distro (Settings → Resources → WSL integration). `docker` is then on the PATH inside WSL and `./sg-migrate.sh` works unchanged.
+- Clone inside the Linux filesystem (e.g. `~/stackguardian-migrator`), not under `/mnt/c/...`: bind mounts from the Windows drive are slow, and a Git-for-Windows checkout may convert the scripts to CRLF line endings.
+- Set `TFE_TOKEN` (or run `terraform login`) **inside WSL**. The wrapper mounts `~/.terraform.d/credentials.tfrc.json` from the WSL home; a `terraform login` done on the Windows side is not seen.
+
 ### Authenticate to Terraform Cloud/Enterprise
 
 Set `TFE_TOKEN` to a long-lived API token (create one under **User Settings → Tokens**, or use a Team/Organization token) — this is the recommended path and avoids session expiry. Alternatively run `terraform login`, which writes `~/.terraform.d/credentials.tfrc.json`. The `tfe` provider, the API state export, and variable-set enrichment all use whichever is present.
