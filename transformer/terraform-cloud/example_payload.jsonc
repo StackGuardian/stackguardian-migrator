@@ -2,8 +2,9 @@
   "Approvers": [],
   "CLIConfiguration": {
     "TfStateFilePath": "", // path to the state file
+    "TfcWorkspace": "", // the source TFC workspace; the later phases select entries by it (ResourceName may differ)
     "WorkflowGroup": {
-      "name": "" // workflow group: tfc-<project>, or projectOverrides[<project>].workflowGroup; reused if it exists, created otherwise
+      "name": "" // workflow group: workspaceOverrides[<ws>].workflowGroup, projectOverrides[<project>].workflowGroup, or tfc-<project>; reused if it exists, created otherwise
     }
   },
   "DeploymentPlatformConfig": [
@@ -31,7 +32,7 @@
       "ERRORED": []
     }
   },
-  "ResourceName": "", // workspace name
+  "ResourceName": "", // workspace name (sanitized), or workspaceOverrides[<ws>].workflowName
   "RunnerConstraints": {
     "type": ""
   }, // type should be "shared" or "private" i.e. "RunnerConstraints": { "type": "private", "names":["runner-group-name"]}. Omit the whole key (SGDefaultRunnerConstraints = null) and StackGuardian applies the org's execution preset at import.

@@ -15,7 +15,10 @@ show_migration_summary() {
   # Per project: the SG workflow group the transformer assigned (projects.*.workflowGroup;
   # older summaries only have the counts, then the default tfc-<segment> is shown).
   "$jqb" -r 'if (.projects // null) != null then .projects | to_entries[] | "    \(.key) -> \(.value.workflowGroup): \(.value.workspaceCount) workflow(s)"
-             else .projectWorkspaceCounts | to_entries[] | "    tfc-\(.key | ascii_downcase | gsub("[^a-z0-9-]+"; "-")): \(.value) workflow(s)" end' "$f" >&2
+             else .projectWorkspaceCounts | to_entries[] | "    tfc-\(.key | ascii_downcase | gsub("[^a-z0-9-]+"; "-")): \(.value) workflow(s)" end,
+             # Workspaces with their own workflow name or group (workspaceOverrides).
+             (. as $s | ((.workspaceGroupOverrides // {}) + (.renamedWorkflows // {}) | keys[])
+               | "    workspace \(.) -> \($s.workflowGroups[.])/\(($s.workflowNames // {})[.] // .)")' "$f" >&2
   if [ "$(tfvars_get .exportStateFiles true)" != "false" ]; then
     states=0
     for n in "$EXPORT_DIR"/states/*.tfstate; do [ -f "$n" ] && states=$((states + 1)); done
@@ -136,8 +139,8 @@ show_import_plan() {
       --slurpfile sum "${summary:-/dev/null}" "$WS_SCOPE_JQ"'
       ($sum[0] // {}) as $S
       | .[]
-      | select(.ResourceName | ws_selected)
-      | ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) as $wsName
+      | select(ws_of | ws_selected)
+      | ws_of as $wsName
       | .ResourceName as $n
       | [ $n, $grp,
           (if ($skip | index($seg)) != null then "skip" elif ($ex | index($n)) != null then "update" else "create" end),

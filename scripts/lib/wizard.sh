@@ -656,15 +656,18 @@ wizard_templates() {
     | map({key: .name, value: {workflowGroup: ("tfc-" + .segment), DeploymentPlatformConfig: $dpc, vcsAuthIntegrationID: $vcs, RunnerConstraints: $runner, Approvers: $appr}})
     | from_entries' 2>/dev/null || echo '{}')"
   W_PROJECT_TEMPLATE_NOTES="$(printf '%s' "${W_SEL_PROJECTS_JSON:-[]}" | "$jqb" -c 'map({key: .name, value: "\(.count) workspace(s)"}) | from_entries' 2>/dev/null || echo '{}')"
-  # A workspace's template shows what it gets today: its project's override
-  # where one exists, else the global pick.
+  # A workspace's template shows what it gets today: its workflow name and
+  # group, its project's override where one exists, else the global pick.
   W_WS_TEMPLATE_JSON="$(printf '%s' "${W_SEL_WS_JSON:-[]}" | "$jqb" -c --argjson have "${W_WS_OVERRIDES_JSON:-"{}"}" --argjson projects "${W_PROJECT_OVERRIDES_JSON:-"{}"}" --argjson pr "${W_SEL_PROJECTS_JSON:-[]}" \
     --argjson dpc "${W_DPC_JSON:-[]}" --arg vcs "${W_VCS_INTEGRATION:-}" --argjson runner "$runner" --argjson appr "${W_APPROVERS_JSON:-[]}" --arg tfv "$tfv" '
     ($pr | map({key: .id, value: .name}) | from_entries) as $names
+    | ($pr | map({key: .id, value: .segment}) | from_entries) as $segs
     | sort_by(.name)
     | map(select(.name as $n | ($have | has($n)) | not))
     | map(($projects[$names[.project] // ""] // {}) as $p
         | {key: .name, value: {
+            workflowName: .name,
+            workflowGroup: ($p.workflowGroup // ("tfc-" + ($segs[.project] // "default"))),
             DeploymentPlatformConfig: ($p.DeploymentPlatformConfig // $dpc),
             vcsAuthIntegrationID: ($p.vcsAuthIntegrationID // $vcs),
             RunnerConstraints: ($p.RunnerConstraints // $runner),

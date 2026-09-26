@@ -128,7 +128,7 @@ CLOUD_JSON="$(tfvars_get_json .cloudAuthVarPatterns)"
 [ "$(tfvars_get .stripCloudAuthVars true)" != "false" ] || CLOUD_JSON='{}'
 
 # workspace name -> cloud family, from the payloads (for the reports below).
-"$JQ_BIN" -s '[.[][] | {key: ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")),
+"$JQ_BIN" -s '[.[][] | {key: (.CLIConfiguration.TfcWorkspace // ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; ""))),
                          value: ((.DeploymentPlatformConfig[0].kind // "") | split("_")[0])}] | from_entries' "$@" >"$WORK/cloud.json"
 
 # Merge the effective set vars into each payload, then report counts: the
@@ -142,7 +142,7 @@ for f in "$@"; do
   "$JQ_BIN" --slurpfile eff "$WORK/effective.json" --argjson ignore "$IGNORE_JSON" --argjson cloud_patterns "$CLOUD_JSON" '
     ($eff[0]) as $E
     | map(
-        ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) as $wsName
+        (.CLIConfiguration.TfcWorkspace // ((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; ""))) as $wsName
         | ($E[$wsName] // [] | map(select(.key as $k | [$ignore[] | . as $p | select($k | test($p))] | length == 0))) as $all
         | ((.DeploymentPlatformConfig[0].kind // "") | split("_")[0]) as $cloud
         | ($cloud_patterns[$cloud] // []) as $cpats

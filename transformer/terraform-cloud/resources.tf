@@ -1,10 +1,22 @@
-# One payload file per TFC project. Written directly (no -generated + mv dance)
-# so re-applies always refresh the output.
+# One payload file per (TFC project, SG workflow group), see
+# local.payloadByFile. Written directly (no -generated + mv dance) so
+# re-applies always refresh the output.
 resource "local_file" "data" {
-  for_each = local.payloadByProject
+  for_each = local.payloadByFile
 
   content  = jsonencode(each.value)
-  filename = "${path.module}/../../${var.exportPath}/sg-payload.${local.projectFileSegment[each.key]}.json"
+  filename = "${path.module}/../../${var.exportPath}/sg-payload.${each.key}.json"
+
+  lifecycle {
+    precondition {
+      condition     = length(local.nameClashes) == 0
+      error_message = "Two workspaces would become the same workflow in one workflow group (a workflow name is unique within a group): ${join("; ", local.nameClashes)}. Change workspaceOverrides[<workspace>].workflowName or give one of them its own workflowGroup."
+    }
+    precondition {
+      condition     = length(local.mixedGroupFiles) == 0
+      error_message = "Workflow group names that differ only in case or punctuation would share a payload file: ${join("; ", local.mixedGroupFiles)}. Use one spelling of the group name."
+    }
+  }
 }
 
 resource "local_file" "summary" {

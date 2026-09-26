@@ -18,11 +18,11 @@ CHECKLIST_OPEN=0
 secret_name_for() { printf 'tfc-%s-%s' "$1" "$2" | tr -c 'A-Za-z0-9_-\n' '-' | cut -c1-100; }
 
 # workflow_for_workspace <tfc-workspace-name> — "<seg>\t<group>\t<ResourceName>"
-# for the payload entry whose TfStateFilePath basename is the workspace.
+# for the payload entry of that workspace (ws_of).
 workflow_for_workspace() {
   local f seg wf
   for f in "${PF[@]}"; do
-    wf="$("$JQ_BIN" -r --arg ws "$1" '.[] | select(((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) == $ws) | .ResourceName' "$f" | head -1)"
+    wf="$("$JQ_BIN" -r --arg ws "$1" "$WS_OF_JQ"'.[] | select(ws_of == $ws) | .ResourceName' "$f" | head -1)"
     if [ -n "$wf" ]; then
       seg="$(seg_of "$f")"
       printf '%s\t%s\t%s\n' "$seg" "$(group_for "$seg")" "$wf"
@@ -49,7 +49,7 @@ create_secret_stubs() {
       skipped=$((skipped + 1))
       continue
     fi
-    ws_selected "$wf" || continue
+    ws_selected "$ws" || continue
     imported="$(state_read | "$JQ_BIN" -r --arg s "$seg" --arg w "$wf" '.import[$s].imported // [] | index($w) != null')"
     if [ "$imported" != "true" ] || ! sg_workflow_exists "$grp" "$wf"; then
       sg_warn "  $grp/$wf is not in StackGuardian (import failed?) — $entry listed in the checklist only"
@@ -112,8 +112,8 @@ _cl_block() { if [ -n "$1" ]; then printf '%s\n\n' "$1"; else printf -- '- None.
 # links; the terminal gets one status line per section). Sets CHECKLIST_OPEN.
 write_checklist() {
   local out="$EXPORT_DIR/post-import-checklist.md" summary="$EXPORT_DIR/migration-summary.json" st
-  local i_secrets i_unstubbed="" i_failed i_fallback="" i_unpinned="" i_preset="" i_trig i_state="" i_stfail i_nonremote="" i_renamed=""
-  local n_secrets n_unstubbed n_failed n_fallback n_unpinned n_preset n_trig n_state n_stfail n_stok n_nonremote n_renamed
+  local i_secrets i_unstubbed="" i_failed i_fallback="" i_unpinned="" i_preset="" i_trig i_state="" i_stfail i_nonremote="" i_renamed="" i_replaced=""
+  local n_secrets n_unstubbed n_failed n_fallback n_unpinned n_preset n_trig n_state n_stfail n_stok n_nonremote n_renamed n_replaced
   local f seg grp n total=0 gw preset_desc=""
   local -a glines=()
   CL_CLEAN=""
@@ -141,9 +141,19 @@ write_checklist() {
   # State that was exported but did not land in SG (upload failed on import).
   i_stfail="$(printf '%s' "$st" | "$JQ_BIN" -r --arg ui "$SG_UI_URL" --arg org "$ORG" '.import // {} | to_entries[] | .value.group as $g | .value.state_failed[]? | "- [ ] [`\($g)/\(.)`](\($ui)/orchestrator/orgs/\($org)/wfgrps/\($g)/wfs/\(.)) — created without its Terraform state; re-run `./sg-migrate.sh import` or upload `export/states/<workspace>.tfstate` by hand (Workflow → Settings → State)"')"
   n_stok="$(printf '%s' "$st" | "$JQ_BIN" -r '[.import // {} | .[] | .state_uploaded[]?] | length')"
+  # Workflows a rename (workflowName) or regroup (workflowGroup) left behind:
+  # SG cannot rename or move a workflow, so the old one still exists.
+  local rw rg rws
+  while IFS=$'\t' read -r rws rw rg; do
+    [ -n "$rws" ] || continue
+    sg_workflow_exists "$rg" "$rw" || continue
+    i_replaced="${i_replaced:+$i_replaced
+}- [ ] [\`$rg/$rw\`]($(wfgrp_ui_url "$rg")/wfs/$rw) — workspace \`$rws\` now imports into another workflow; delete this one once the new one works"
+  done < <(printf '%s' "$st" | "$JQ_BIN" -r '.replaced_workflows // [] | .[] | [.workspace, .workflow, .group] | @tsv')
   n_secrets="$(_cl_count "$i_secrets")"; n_unstubbed="$(_cl_count "$i_unstubbed")"; n_failed="$(_cl_count "$i_failed")"
   n_fallback="$(_cl_count "$i_fallback")"; n_unpinned="$(_cl_count "$i_unpinned")"; n_preset="$(_cl_count "$i_preset")"; n_trig="$(_cl_count "$i_trig")"
   n_state="$(_cl_count "$i_state")"; n_stfail="$(_cl_count "$i_stfail")"; n_nonremote="$(_cl_count "$i_nonremote")"; n_renamed="$(_cl_count "$i_renamed")"
+  n_replaced="$(_cl_count "$i_replaced")"
 
   # --- the file -----------------------------------------------------------------
   {
@@ -174,6 +184,9 @@ write_checklist() {
     [ -n "$i_nonremote" ] && printf '%s\n\n' "$i_nonremote"
     if [ -n "$i_renamed" ]; then
       printf '## 6. Renamed workflows\n\nThese TFC workspace names were not valid StackGuardian workflow names and were adjusted:\n\n%s\n\n' "$i_renamed"
+    fi
+    if [ -n "$i_replaced" ]; then
+      printf '## 7. Workflows left behind\n\nThese workspaces were imported earlier under another workflow name or group (workflowName / workflowGroup changed). StackGuardian cannot rename or move a workflow, so the old one still exists next to the new one:\n\n%s\n\n' "$i_replaced"
     fi
     printf '## Finally\n\n- [ ] Run a plan on one workflow per project and compare with the last TFC run.\n- [ ] Disable auto-apply / triggers on the TFC workspaces once StackGuardian owns the deployments.\n'
   } >"$out"
@@ -216,9 +229,10 @@ write_checklist() {
       "state: $n_stfail workflow(s) are in SG without their state (upload failed) — re-run '$PROG import' or upload by hand"
   fi
   [ "$n_renamed" -gt 0 ] && _cl_status "$n_renamed" "" "names: $n_renamed workflow(s) were renamed to valid SG names"
+  [ "$n_replaced" -gt 0 ] && _cl_status "$n_replaced" "" "left behind: $n_replaced old workflow(s) still exist after a workflowName/workflowGroup change — delete them once the new ones work"
   [ -n "$CL_CLEAN" ] && printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$CL_CLEAN: nothing left to do" >&2
   # shellcheck disable=SC2034
-  CHECKLIST_OPEN=$((n_secrets + n_unstubbed + n_failed + n_fallback + n_unpinned + n_preset + n_trig + n_state + n_stfail + n_nonremote))
+  CHECKLIST_OPEN=$((n_secrets + n_unstubbed + n_failed + n_fallback + n_unpinned + n_preset + n_trig + n_state + n_stfail + n_nonremote + n_replaced))
   sg_dim "full checklist with links: $(sg_rel "$out")"
 }
 

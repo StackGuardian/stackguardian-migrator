@@ -379,8 +379,26 @@ preflight_config() {
       fi
     done < <(tfvars_json | "$jqb" -r '(.projectOverrides // {}) | keys[]')
   fi
+  # Target names (workflowName / workflowGroup): SG resource names. The apply
+  # would refuse them too, but only after reading every workspace.
+  local n_names=0 n_groups=0 field k
+  while IFS=$'\t' read -r field k v; do
+    [ -n "$field" ] || continue
+    if [ "$field" = "projectName" ]; then
+      pf_fail "projectOverrides['$k'].workflowName: a workflow name belongs to one workspace — set it in workspaceOverrides['<workspace>'] instead"
+    elif [[ "$v" =~ ^[-a-zA-Z0-9_]{1,100}$ ]]; then
+      pf_pass
+      if [ "$field" = workflowName ]; then n_names=$((n_names + 1)); else n_groups=$((n_groups + 1)); fi
+    else
+      pf_fail "workspaceOverrides['$k'].$field '$v' is not a valid StackGuardian name (1-100 characters of letters, digits, - and _)"
+    fi
+  done < <(tfvars_json | "$jqb" -r '((.workspaceOverrides // {}) | to_entries[] | .key as $k | .value | objects | (["workflowName", "workflowGroup"][] as $f | select(has($f)) | [$f, $k, (.[$f] | tostring)])),
+      ((.projectOverrides // {}) | to_entries[] | select(.value | objects | has("workflowName")) | ["projectName", .key, ""]) | @tsv')
   [ "$n_pr_ov" -gt 0 ] && ov_note="$n_pr_ov projectOverrides"
   [ "$n_ws_ov" -gt 0 ] && ov_note="$ov_note${ov_note:+ and }$n_ws_ov workspaceOverrides"
+  if [ "$((n_names + n_groups))" -gt 0 ]; then
+    ov_note="$ov_note (${n_names} with their own workflow name, ${n_groups} with their own workflow group)"
+  fi
   [ -n "$ov_note" ] && printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$ov_note entries name existing TFC projects/workspaces" >&2
   return 0
 }

@@ -16,6 +16,9 @@
 %{ for project, info in summary.projects ~}
 - ${project}: ${info.workspaceCount} -> workflow group ${info.workflowGroup} (sg-payload.${info.segment}.json)
 %{ endfor ~}
+%{ for ws, grp in summary.workspaceGroupOverrides ~}
+- ${ws} (${summary.workspaceProjects[ws]}) -> workflow group ${grp} (workspaceOverrides)
+%{ endfor ~}
 %{ if length(summary.unknownProjectOverrides) > 0 ~}
 - WARNING: projectOverrides keys matching no TFC project (ignored): ${join(", ", summary.unknownProjectOverrides)}
 %{ endif ~}
@@ -94,6 +97,15 @@ TFC may not hold state for these (local/agent execution); state export can be em
 %{ else ~}
 %{ for orig, new in summary.renamedWorkspaces ~}
 - ${orig} -> ${new}
+%{ endfor ~}
+%{ endif ~}
+
+## Workflow names set in workspaceOverrides
+%{ if length(summary.renamedWorkflows) == 0 ~}
+- None.
+%{ else ~}
+%{ for ws, wf in summary.renamedWorkflows ~}
+- ${ws} -> ${wf}
 %{ endfor ~}
 %{ endif ~}
 

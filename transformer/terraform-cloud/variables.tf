@@ -189,16 +189,26 @@ locals {
     "terraformVersion",          # string, sent as-is (e.g. TERRAFORM-1.7.5)
     "extraEnvironmentVariables", # list of SG EnvironmentVariables entries
     "VCSTriggers",               # object, replaces the derived triggers entirely
+    "workflowName",              # string, workspaceOverrides only: the SG workflow name
+    "workflowGroup",             # string, the SG workflow group
   ]
 }
 
 variable "workspaceOverrides" {
   default     = {}
-  description = "Per-workspace overrides keyed by TFC/TFE workspace name. Any field set here wins over the matching projectOverrides and SGDefault* values for that workspace only. Fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers (see terraform.tfvars.example)."
+  description = "Per-workspace overrides keyed by TFC/TFE workspace name. Any field set here wins over the matching projectOverrides and SGDefault* values for that workspace only. Fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers, workflowName (the StackGuardian workflow to migrate the workspace into; default: the workspace name) and workflowGroup (the workflow group for this workspace; default: the project's group). A workspace with its own workflowGroup is written to sg-payload.<project>.<group>.json (see terraform.tfvars.example)."
   type        = any
   validation {
-    condition     = can([for name, o in var.workspaceOverrides : keys(o)]) && alltrue([for name, o in var.workspaceOverrides : length(setsubtract(keys(o), ["DeploymentPlatformConfig", "RunnerConstraints", "Approvers", "vcsAuthIntegrationID", "vcsRepoPrefix", "sourceConfigDestKind", "terraformVersion", "extraEnvironmentVariables", "VCSTriggers"])) == 0])
-    error_message = "workspaceOverrides must map workspace names to objects with only these fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers."
+    condition     = can([for name, o in var.workspaceOverrides : keys(o)]) && alltrue([for name, o in var.workspaceOverrides : length(setsubtract(keys(o), ["DeploymentPlatformConfig", "RunnerConstraints", "Approvers", "vcsAuthIntegrationID", "vcsRepoPrefix", "sourceConfigDestKind", "terraformVersion", "extraEnvironmentVariables", "VCSTriggers", "workflowName", "workflowGroup"])) == 0])
+    error_message = "workspaceOverrides must map workspace names to objects with only these fields: DeploymentPlatformConfig, RunnerConstraints, Approvers, vcsAuthIntegrationID, vcsRepoPrefix, sourceConfigDestKind, terraformVersion, extraEnvironmentVariables, VCSTriggers, workflowName, workflowGroup."
+  }
+  validation {
+    condition     = alltrue([for name, o in var.workspaceOverrides : try(o.workflowName, null) == null || can(regex("^[-a-zA-Z0-9_]{1,100}$", o.workflowName))])
+    error_message = "workspaceOverrides[<workspace>].workflowName must be 1-100 characters of letters, digits, - and _ (a StackGuardian workflow name)."
+  }
+  validation {
+    condition     = alltrue([for name, o in var.workspaceOverrides : try(o.workflowGroup, null) == null || can(regex("^[-a-zA-Z0-9_]{1,100}$", o.workflowGroup))])
+    error_message = "workspaceOverrides[<workspace>].workflowGroup must be 1-100 characters of letters, digits, - and _ (a StackGuardian workflow group name)."
   }
 }
 

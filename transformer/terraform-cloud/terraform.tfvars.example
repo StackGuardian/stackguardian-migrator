@@ -116,9 +116,15 @@ forceStateRefresh = false
 
 # Per-workspace overrides, keyed by workspace name. Any field set here wins over
 # the projectOverrides and SGDefault* values, for that workspace only. All
-# fields are optional.
+# fields are optional. workflowName is the StackGuardian workflow the workspace
+# is migrated into (default: the workspace name); workflowGroup puts this
+# workspace into its own workflow group (default: the project's group), written
+# to sg-payload.<project>.<group>.json. For one workspace per run the CLI does
+# the same: --workspace prod-networking --workflow net-prod --workflow-group networking.
 # workspaceOverrides = {
 #   "prod-networking" = {
+#     workflowName  = "net-prod"
+#     workflowGroup = "networking"
 #     DeploymentPlatformConfig = [
 #       {
 #         "kind" : "AWS_RBAC",

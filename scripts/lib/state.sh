@@ -11,7 +11,9 @@
 #           "import":  { "<seg>":   {"at": iso, "payload_sha": sha, "group": g,
 #                                    "imported": [...], "updated": [...], "failed": [...],
 #                                    "tf_fallback": [...],
-#                                    "state_uploaded": [...], "state_failed": [...]} },
+#                                    "state_uploaded": [...], "state_failed": [...],
+#                                    "workspaces": {"<tfc-ws>": {"workflow": wf, "group": g}}} },
+#           "replaced_workflows": [ {"workspace": ws, "workflow": wf, "group": g}, ... ],
 #           "triggers": { "<seg>":  {"at": iso, "group": g, "set": [...], "unchanged": [...],
 #                                    "failed": [...], "missing": [...],
 #                                    "sha": {"<wf>": sha-of-posted-body}} } }
@@ -19,6 +21,11 @@
 # import.<seg>.group is also the anchor of the "never move" check in the import
 # plan: a project whose target group changed while its workflows still exist
 # in the old group is refused (StackGuardian cannot move workflows).
+# import.<seg>.workspaces records where each TFC workspace landed, so the plan
+# can check per workflow (a workspace may have its own workflowName and
+# workflowGroup, and move between payload files). When a workspace lands under
+# another workflow name or group than before, the old one is appended to
+# replaced_workflows: it still exists in SG and the checklist lists it.
 
 STATE_FILE="${SG_STATE_FILE:-$SG_REPO_ROOT/.sg/state.json}"
 
@@ -69,7 +76,19 @@ state_import_done() {
 
 # state_record_import <seg> <result-json> — merge a do_import result
 # ({group, payload_sha, imported, failed, tf_fallback, state_uploaded,
-# state_failed}) for a payload file.
-state_record_import() { state_update '.import[$s] = ($r + {at: $at})' --arg s "$1" --argjson r "$2" --arg at "$(state_now)"; }
+# state_failed, workspaces}) for a payload file. workspaces is merged into the
+# previous map (a --workspace run imports a subset) and each workspace is
+# dropped from the maps of the other files, where it lived before a regroup.
+state_record_import() {
+  state_update '
+    ([.import // {} | .[] | .workspaces // {}] | add // {}) as $old
+    | ($r.workspaces // {}) as $new
+    | .replaced_workflows = (((.replaced_workflows // []) + [$new | to_entries[]
+        | select($old[.key] != null and $old[.key] != .value) | {workspace: .key} + $old[.key]])
+        | unique | map(select(. as $o | $new[$o.workspace] != {workflow: $o.workflow, group: $o.group})))
+    | .import |= ((. // {}) | with_entries(if .key == $s then . else .value.workspaces |= (if . == null then . else with_entries(select($new[.key] == null)) end) end))
+    | .import[$s] = ($r + {at: $at, workspaces: ((.import[$s].workspaces // {}) + $new)})' \
+    --arg s "$1" --argjson r "$2" --arg at "$(state_now)"
+}
 
 state_reset() { rm -f "$STATE_FILE"; }

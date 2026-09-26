@@ -10,7 +10,7 @@
 #   --exclude-tag NAME        adds to tfWorkspaceIgnoreTags for the run
 # Every phase applies the same selection: apply hands the lists to terraform,
 # the later phases match them against the payload files (project slug) and
-# entries (ResourceName), so 'import --workspace "team-*"' picks the workflows
+# entries (their TFC workspace, ws_of), so 'import --workspace "team-*"' picks the workflows
 # 'apply --workspace "team-*"' exported. Tags are not in the payload, so the
 # tag flags only shape the export. Globs support * and ?.
 
@@ -49,11 +49,12 @@ _scope_jq() { JQ_BIN="${JQ_BIN:-$(sg_resolve jq sg_ensure_jq)}"; }
 slug_of() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g'; }
 
 # project_selected <segment> — exit 0 when no --project is set or one of them
-# names this payload segment.
+# names this payload segment. A workspace with its own workflowGroup lives in
+# sg-payload.<project>.<group>.json: the project is the part before the dot.
 project_selected() {
   local p
   [ "${#PROJECT_FILTER[@]}" -eq 0 ] && return 0
-  for p in "${PROJECT_FILTER[@]}"; do [ "$(slug_of "$p")" = "$1" ] && return 0; done
+  for p in "${PROJECT_FILTER[@]}"; do [ "$(slug_of "$p")" = "${1%%.*}" ] && return 0; done
   return 1
 }
 
@@ -114,10 +115,17 @@ ws_selected() {
   [ "${#WS_FILTER[@]}" -eq 0 ]
 }
 
+# WS_OF_JQ — jq def: the TFC workspace of a payload entry. The scope matches
+# workspaces, not workflow names: ResourceName may be an explicit workflowName.
+# Older payloads have no TfcWorkspace; the state file's basename is the name.
+WS_OF_JQ='
+  def ws_of: .CLIConfiguration.TfcWorkspace // (((.CLIConfiguration.TfStateFilePath // "") | sub(".*/"; "") | sub("\\.tfstate$"; "")) | select(. != "")) // .ResourceName;
+'
+
 # WS_SCOPE_JQ — the same test for jq programs over payload entries. Prepend it
 # to the program and pass "${WS_JQ_ARGS[@]}" (after ws_jq_args), then use
-# 'select(.ResourceName | ws_selected)'.
-WS_SCOPE_JQ='
+# 'select(ws_of | ws_selected)'.
+WS_SCOPE_JQ="$WS_OF_JQ"'
   def ws_glob($p): "^" + ($p | gsub("(?<c>[.+^$(){}|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$";
   def ws_selected: . as $n
     | (($inc | length) == 0 or any($inc[]; . as $p | $n | test(ws_glob($p))))
@@ -168,10 +176,14 @@ scope_sha_input() { printf '%s|%s|%s|%s|%s|%s' "${PROJECT_FILTER[*]-}" "$(ws_fil
 #   --cloud-connector ID        DeploymentPlatformConfig; the kind is looked up in SG
 #   --vcs-connector ID          vcsAuthIntegrationID + sourceConfigDestKind (looked up) + repo prefix
 #   --runner-group NAME|shared  RunnerConstraints
-#   --workflow-group NAME       the project's workflow group (needs --project)
+#   --workflow NAME             the workflow the --workspace is migrated into
+#   --workflow-group NAME       the workflow group of the --workspace, or of the --project
 # With --project the connector flags become that project's projectOverrides
 # entry, so every workspace of the project inherits them; without it they set
-# the SGDefault* values. tfvars_json returns the file merged with
+# the SGDefault* values. --workflow and --workflow-group with exactly one
+# --workspace (a name, no glob) become that workspace's workspaceOverrides
+# entry (workflowName, workflowGroup); --workflow-group without one needs
+# --project. tfvars_json returns the file merged with
 # TFVARS_OVERLAY_JSON, so preflight, the plan, enrich and the import see the
 # same values, and apply receives them as -var. Nothing is written to the
 # tfvars: a later run without the flags PATCHes the workflows back to it.
@@ -180,9 +192,18 @@ CLOUD_CONNECTOR=""
 VCS_CONNECTOR=""
 RUNNER_GROUP=""
 WORKFLOW_GROUP=""
+WORKFLOW_NAME=""
 TFVARS_OVERLAY_JSON='{}'
 
-overlay_requested() { [ "${#SET_VARS[@]}" -gt 0 ] || [ -n "$CLOUD_CONNECTOR$VCS_CONNECTOR$RUNNER_GROUP$WORKFLOW_GROUP" ]; }
+overlay_requested() { [ "${#SET_VARS[@]}" -gt 0 ] || [ -n "$CLOUD_CONNECTOR$VCS_CONNECTOR$RUNNER_GROUP$WORKFLOW_GROUP$WORKFLOW_NAME" ]; }
+
+# overlay_single_workspace — the --workspace value when exactly one is given
+# and it is a name, not a glob (the target of --workflow / --workflow-group).
+overlay_single_workspace() {
+  [ "${#WS_FILTER[@]}" -eq 1 ] || return 1
+  case "${WS_FILTER[0]}" in *'*'* | *'?'* | '') return 1 ;; esac
+  printf '%s' "${WS_FILTER[0]}"
+}
 
 # _overlay_value <text> — a --set value as JSON. Literals ([..], {..}, "..",
 # true/false/null, numbers) go through hcl2json; anything else is a string, so
@@ -264,9 +285,25 @@ overlay_build() {
     if [ "$RUNNER_GROUP" = "shared" ]; then rc='{"type":"shared"}'; else rc="$("$JQ_BIN" -cn --arg n "$RUNNER_GROUP" '{type: "private", names: [$n]}')"; fi
     fields="$("$JQ_BIN" -c --argjson r "$rc" '.RunnerConstraints = $r' <<<"$fields")"
   fi
+  # --workflow / --workflow-group for one workspace: its workspaceOverrides entry.
+  local ws wsf='{}'
+  ws="$(overlay_single_workspace)" || ws=""
+  if [ -n "$WORKFLOW_NAME" ]; then
+    [ -n "$ws" ] || die "--workflow names the workflow of one workspace: pass exactly one --workspace NAME (no glob) with it — for several, set workspaceOverrides.\"<workspace>\".workflowName in $(sg_rel "$TFVARS")"
+    [[ "$WORKFLOW_NAME" =~ ^[-a-zA-Z0-9_]{1,100}$ ]] || die "--workflow '$WORKFLOW_NAME': a workflow name is 1-100 characters of letters, digits, - and _"
+    wsf="$("$JQ_BIN" -c --arg n "$WORKFLOW_NAME" '.workflowName = $n' <<<"$wsf")"
+  fi
   if [ -n "$WORKFLOW_GROUP" ]; then
-    [ "${#PROJECT_FILTER[@]}" -gt 0 ] || die "--workflow-group needs --project: a workflow group belongs to a TFC project"
-    fields="$("$JQ_BIN" -c --arg g "$WORKFLOW_GROUP" '.workflowGroup = $g' <<<"$fields")"
+    [[ "$WORKFLOW_GROUP" =~ ^[-a-zA-Z0-9_]{1,100}$ ]] || die "--workflow-group '$WORKFLOW_GROUP': a workflow group name is 1-100 characters of letters, digits, - and _"
+    if [ -n "$ws" ]; then
+      wsf="$("$JQ_BIN" -c --arg g "$WORKFLOW_GROUP" '.workflowGroup = $g' <<<"$wsf")"
+    else
+      [ "${#PROJECT_FILTER[@]}" -gt 0 ] || die "--workflow-group needs --project (the group of the whole project) or exactly one --workspace NAME (the group of that workspace)"
+      fields="$("$JQ_BIN" -c --arg g "$WORKFLOW_GROUP" '.workflowGroup = $g' <<<"$fields")"
+    fi
+  fi
+  if [ "$wsf" != "{}" ]; then
+    o="$("$JQ_BIN" -c --arg w "$ws" --argjson f "$wsf" '.workspaceOverrides[$w] = ((.workspaceOverrides[$w] // {}) + $f)' <<<"$o")"
   fi
   if [ "$fields" != "{}" ]; then
     if [ "${#PROJECT_FILTER[@]}" -gt 0 ]; then
@@ -288,13 +325,17 @@ overlay_build() {
 
 # overlay_describe — one line for the log and the run result.
 overlay_describe() {
-  local out="" kv
+  local out="" kv ws
   [ -n "$CLOUD_CONNECTOR" ] && out="cloud connector ${CLOUD_CONNECTOR#/integrations/} (${OVERLAY_CLOUD_KIND:-?})"
   [ -n "$VCS_CONNECTOR" ] && out="${out:+$out, }VCS connector ${VCS_CONNECTOR#/integrations/} (${OVERLAY_VCS_KIND:-?})"
   [ -n "$RUNNER_GROUP" ] && out="${out:+$out, }runners $RUNNER_GROUP"
-  [ -n "$WORKFLOW_GROUP" ] && out="${out:+$out, }workflow group $WORKFLOW_GROUP"
+  ws="$(overlay_single_workspace)" || ws=""
+  [ -n "$WORKFLOW_GROUP" ] && [ -z "$ws" ] && out="${out:+$out, }workflow group $WORKFLOW_GROUP"
   if [ -n "$out" ]; then
     if [ "${#PROJECT_FILTER[@]}" -gt 0 ]; then out="$out for project(s) ${PROJECT_FILTER[*]}"; else out="$out as the defaults"; fi
+  fi
+  if [ -n "$ws" ] && [ -n "$WORKFLOW_NAME$WORKFLOW_GROUP" ]; then
+    out="${out:+$out, }workspace $ws -> ${WORKFLOW_GROUP:-the project group}/${WORKFLOW_NAME:-$ws}"
   fi
   for kv in ${SET_VARS[@]+"${SET_VARS[@]}"}; do out="${out:+$out, }$kv"; done
   printf '%s' "$out"

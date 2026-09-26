@@ -149,10 +149,11 @@ Commands:
               the Docker image if the Dockerfile changed. Runs on the host.
 
 Each TFC project is imported into the workflow group the transformer assigned to
-it: projectOverrides.<project>.workflowGroup in terraform.tfvars, or tfc-<project>.
+it: projectOverrides.<project>.workflowGroup in terraform.tfvars, or tfc-<project>;
+a workspace with its own workspaceOverrides.<ws>.workflowGroup goes there instead.
 An existing group is reused, a missing one is created (--no-create-groups to
-require it). Workflows are never moved: when a project's workflows already live
-in another group the plan stops and says so.
+require it). Workflows are never moved: when a workflow already lives in another
+group the plan stops and says so.
 
 Options:
   --org NAME         StackGuardian org for import (or set SG_ORG)
@@ -186,11 +187,15 @@ Options:
   --upgrade          With 'init': append missing settings to an existing terraform.tfvars
 
 Run configuration (on top of terraform.tfvars, for this run only; with --project
-they apply to that project's workflows, otherwise as the defaults):
+they apply to that project's workflows, otherwise as the defaults; --workflow and
+--workflow-group with one --workspace NAME apply to that workspace):
   --cloud-connector ID   Cloud connector (/integrations/<name>); its kind is looked up in SG
   --vcs-connector ID     VCS connector; kind and repo URL prefix follow the connector
   --runner-group NAME    Private runner group for the workflows ("shared" = SG runners)
-  --workflow-group NAME  Workflow group for the project's workflows (needs --project)
+  --workflow NAME        Workflow to migrate the --workspace into (needs exactly one
+                         --workspace NAME; default: the workspace name)
+  --workflow-group NAME  Workflow group: with one --workspace NAME for that workspace,
+                         otherwise for the --project workflows (default: tfc-<project>)
   --set KEY=VALUE        Any transformer variable, e.g. --set SGDefaultTerraformVersion=null
                          (repeatable; HCL/JSON value, bare text is a string)
   -v, --verbose      Show full terraform/tool output (default: concise)
@@ -451,25 +456,42 @@ group_for() {
   printf '%s' "${g:-tfc-$seg}"
 }
 
+# project_group_of <project-segment> — the project's own workflow group
+# (migration-summary.json projects[].workflowGroup), else tfc-<segment>.
+project_group_of() {
+  local g=""
+  [ -f "$EXPORT_DIR/migration-summary.json" ] &&
+    g="$("$JQ_BIN" -r --arg s "$1" '[(.projects // {})[] | select(.segment == $s) | .workflowGroup] | first // empty' "$EXPORT_DIR/migration-summary.json" 2>/dev/null)"
+  printf '%s' "${g:-tfc-$1}"
+}
+
 # plan_groups <payload>... — the workflow-group part of the import plan. Each
 # file's target group is checked and shown as reuse (exists), create (missing,
 # created before the import) or missing! (--no-create-groups). Two things block
-# an import and are collected in PLAN_PROBLEMS: a project whose workflows
-# already live in another group (StackGuardian cannot move workflows between
-# groups), and two projects sharing a group with overlapping workflow names (a
-# name is unique within a group). Sets PLAN_TO_CREATE, PLAN_N_CREATE,
-# PLAN_TOTAL_WF; the caller shows the problems and stops after the full plan.
+# an import and are collected in PLAN_PROBLEMS: a workflow that already lives
+# in another group (StackGuardian cannot move workflows between groups; checked
+# per workspace from state, per project otherwise), and two files sharing a
+# group with overlapping workflow names (a name is unique within a group).
+# Warnings only: PLAN_REPLACED (a workspace imported earlier under another
+# workflow name, which stays behind) and PLAN_OVERWRITES (an explicit
+# workflowName matching a workflow this workspace did not create). Sets
+# PLAN_TO_CREATE, PLAN_N_CREATE, PLAN_TOTAL_WF; the caller shows the problems
+# and stops after the full plan.
 plan_groups() {
-  local f seg grp count code status plain prev still n_still names fw gw i legacy=0 line
+  local f seg grp count code status plain prev still n_still names fw gw i legacy=0 line known ws wf pwf pgrp
   local -a paths=("$@") files=() groups=() counts=() statuses=() plains=()
   PLAN_TO_CREATE=" "
   PLAN_N_CREATE=0
   PLAN_TOTAL_WF=0
   PLAN_PROBLEMS=()
+  PLAN_REPLACED=()
+  PLAN_OVERWRITES=()
   ws_jq_args
+  # Where each workspace landed on earlier imports (state, all files).
+  known="$(state_read | "$JQ_BIN" -c '[.import // {} | .[] | .workspaces // {}] | add // {}')"
   for f in "${paths[@]}"; do
     seg="$(seg_of "$f")"
-    names="$("$JQ_BIN" -c "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'[.[] | select(.ResourceName | ws_selected) | .ResourceName]' "$f")"
+    names="$("$JQ_BIN" -c "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'[.[] | select(ws_of | ws_selected) | .ResourceName]' "$f")"
     count="$("$JQ_BIN" 'length' <<<"$names")"
     PLAN_TOTAL_WF=$((PLAN_TOTAL_WF + count))
     grp="$(group_for "$seg")"
@@ -499,12 +521,48 @@ plan_groups() {
     *) die "unexpected HTTP $code checking group '$grp'" ;;
     esac
 
-    # Never move: if this project's workflows were imported into another group
-    # before (state), or would sit in the default tfc-<segment> group when the
-    # target is now a different one, and they still exist there, refuse.
+    # Never move, per workflow: a workspace recorded (state) under another
+    # group whose workflow of the same name still exists there is refused;
+    # under another name (workflowName changed) it is imported as a new
+    # workflow and the old one is reported (PLAN_REPLACED, the checklist).
+    while IFS=$'\t' read -r ws wf pwf pgrp; do
+      [ -n "$ws" ] || continue
+      sg_workflow_exists "$pgrp" "$pwf" || continue
+      if [ "$pwf" = "$wf" ]; then
+        status="${C_RED}moved!${C_RESET}"; plain="moved!"
+        PLAN_PROBLEMS+=("$(basename "$f"): workflow '$wf' (workspace $ws) already lives in group '$pgrp' but the target is now '$grp' — StackGuardian cannot move workflows between groups; keep '$pgrp' (workflowGroup in workspaceOverrides/projectOverrides) or delete '$pgrp/$wf' first")
+      else
+        PLAN_REPLACED+=("$pgrp/$pwf|$grp/$wf|$ws")
+      fi
+    done < <("$JQ_BIN" -r --argjson k "$known" --arg g "$grp" "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'.[] | select(ws_of | ws_selected)
+      | ws_of as $ws | $k[$ws] as $p | select($p != null and ($p.group != $g or $p.workflow != .ResourceName))
+      | [$ws, .ResourceName, $p.workflow, $p.group] | @tsv' "$f")
+
+    # An explicit workflowName that matches a workflow this workspace did not
+    # create (no state record of it there): the import overwrites it (PATCH).
+    if [ "$plain" != create ] && [ "$plain" != "missing!" ]; then
+      while IFS=$'\t' read -r ws wf; do
+        [ -n "$ws" ] && PLAN_OVERWRITES+=("$grp/$wf|$ws")
+      done < <("$JQ_BIN" -r --argjson k "$known" --arg g "$grp" --argjson ex "$(sg_list_workflows "$grp")" "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'.[] | select(ws_of | ws_selected)
+        | ws_of as $ws | .ResourceName as $n | select($ws != $n and ($ex | index($n)) != null and $k[$ws] != {workflow: $n, group: $g})
+        | [$ws, .ResourceName] | @tsv' "$f")
+    fi
+
+    # Per file, for workspaces the state has no record of: if this project's
+    # workflows were imported into another group before (state), or would sit
+    # in the project's default group when the target is now a different one,
+    # and they still exist there, refuse. A file of workspaces with their own
+    # group (sg-payload.<project>.<group>.json) compares with its project's group.
+    names="$("$JQ_BIN" -c --argjson k "$known" "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'[.[] | select(ws_of | ws_selected) | select($k[ws_of] == null) | .ResourceName]' "$f")"
     prev="$(state_read | "$JQ_BIN" -r --arg s "$seg" '.import[$s].group // empty')"
-    [ -z "$prev" ] && [ "$grp" != "tfc-$seg" ] && prev="tfc-$seg"
-    if [ -n "$prev" ] && [ "$prev" != "$grp" ] && [ "$(wfgroup_http_code "$prev")" = "200" ]; then
+    if [ -z "$prev" ]; then
+      if [ "$seg" = "${seg%%.*}" ]; then
+        [ "$grp" != "tfc-$seg" ] && prev="tfc-$seg"
+      else
+        prev="$(project_group_of "${seg%%.*}")"
+      fi
+    fi
+    if [ -n "$prev" ] && [ "$prev" != "$grp" ] && [ "$names" != "[]" ] && [ "$(wfgroup_http_code "$prev")" = "200" ]; then
       still="$("$JQ_BIN" -nc --argjson ex "$(sg_list_workflows "$prev")" --argjson mine "$names" '[$mine[] | select(. as $n | $ex | index($n) != null)]')"
       n_still="$("$JQ_BIN" 'length' <<<"$still")"
       if [ "$n_still" -gt 0 ]; then
@@ -530,7 +588,7 @@ plan_groups() {
     [ -n "$line" ] && PLAN_PROBLEMS+=("$line")
   done < <(for ((i = 0; i < ${#paths[@]}; i++)); do
     "$JQ_BIN" -c --arg seg "$(seg_of "${paths[i]}")" --arg grp "${groups[i]}" "${WS_JQ_ARGS[@]}" \
-      "$WS_SCOPE_JQ"'{seg: $seg, grp: $grp, names: [.[] | select(.ResourceName | ws_selected) | .ResourceName]}' "${paths[i]}"
+      "$WS_SCOPE_JQ"'{seg: $seg, grp: $grp, names: [.[] | select(ws_of | ws_selected) | .ResourceName]}' "${paths[i]}"
   done | "$JQ_BIN" -sr '
       group_by(.grp)[] | select(length > 1) | .[0].grp as $g
       | ([.[].names[]] | group_by(.) | map(select(length > 1) | .[0])) as $dups
@@ -554,6 +612,13 @@ plan_groups() {
   if [ "$legacy" -gt 0 ]; then
     sg_warn "$(sg_rel "$MAPPING") overrides the group of $legacy project(s) — this file is deprecated; set projectOverrides.\"<project>\".workflowGroup in $(sg_rel "$TFVARS") instead (project names: workspaceProjects in $(sg_rel "$EXPORT_DIR")/migration-summary.json) and re-run 'apply'"
   fi
+  for line in ${PLAN_OVERWRITES[@]+"${PLAN_OVERWRITES[@]}"}; do
+    sg_warn "workspace ${line#*|} targets ${line%%|*}, which already exists and was not created from this workspace — the import overwrites it (PATCH)"
+  done
+  for line in ${PLAN_REPLACED[@]+"${PLAN_REPLACED[@]}"}; do
+    IFS='|' read -r prev grp ws <<<"$line"
+    sg_warn "workspace $ws was imported as $prev and now imports into $grp — $prev stays in StackGuardian (delete it once $grp works; listed in the checklist)"
+  done
   for line in ${PLAN_PROBLEMS[@]+"${PLAN_PROBLEMS[@]}"}; do
     printf '  %s✗%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$line" >&2
   done
@@ -580,7 +645,7 @@ do_set_triggers() {
       continue
     fi
     wf="$("$JQ_BIN" -r --argjson i "$i" '.[$i].ResourceName' "$f")"
-    ws_selected "$wf" || continue
+    ws_selected "$("$JQ_BIN" -r --argjson i "$i" "$WS_OF_JQ"'.[$i] | ws_of' "$f")" || continue
     # A workflow that failed to import has nothing to attach triggers to.
     if ! sg_workflow_exists "$grp" "$wf"; then
       sg_warn "  $grp/$wf does not exist in SG (import failed?) — skipping triggers"
@@ -1023,7 +1088,7 @@ import_bulk() {
 # the trigger pass see what was actually imported); each fallback is appended to
 # terraform-version-fallbacks.log. Any other per-workflow failure fails the file.
 do_import() {
-  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() st_ok=() st_failed=() upd=() name line tmp names work all_names patch
+  local f="$1" seg grp out rc=0 ceiling="" failed=() fb=() st_ok=() st_failed=() upd=() name line tmp names work all_names ws_map patch
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   # With --workspace / --exclude-workspace, import only the selected workflows
@@ -1032,7 +1097,7 @@ do_import() {
   if ws_narrowed; then
     ws_jq_args
     work="$(mktemp "$EXPORT_DIR/.subset.$seg.XXXXXX")"
-    "$JQ_BIN" "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'map(select(.ResourceName | ws_selected))' "$f" >"$work"
+    "$JQ_BIN" "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'map(select(ws_of | ws_selected))' "$f" >"$work"
     if [ "$("$JQ_BIN" 'length' "$work")" -eq 0 ]; then
       sg_log "$(basename "$f"): no selected workflows — skipped"
       rm -f "$work"
@@ -1043,6 +1108,7 @@ do_import() {
   out="$(mktemp)"
   import_bulk "$grp" "$work" "$out" || rc=1
   all_names="$("$JQ_BIN" -c '[.[].ResourceName]' "$work")"
+  ws_map="$("$JQ_BIN" -c "$WS_OF_JQ"'map({key: ws_of, value: .ResourceName}) | from_entries' "$work")"
 
   while IFS= read -r line; do
     if [[ "$line" =~ $TF_CEILING_RE ]]; then
@@ -1104,14 +1170,15 @@ do_import() {
 
   # Per-file result for the state file and the post-import checklist
   # (run_parallel jobs run in subshells, so the caller merges these).
-  "$JQ_BIN" -nc --arg g "$grp" --arg sha "$(sg_sha_files "$f")" --argjson all "$all_names" \
+  "$JQ_BIN" -nc --arg g "$grp" --arg sha "$(sg_sha_files "$f")" --argjson all "$all_names" --argjson ws "$ws_map" \
     --argjson failed "$([ "${#failed[@]}" -gt 0 ] && names_json "${failed[@]}" || echo '[]')" \
     --argjson fallback "$([ "${#fb[@]}" -gt 0 ] && names_json "${fb[@]}" || echo '[]')" \
     --argjson st_ok "$([ "${#st_ok[@]}" -gt 0 ] && names_json "${st_ok[@]}" || echo '[]')" \
     --argjson st_failed "$([ "${#st_failed[@]}" -gt 0 ] && names_json "${st_failed[@]}" || echo '[]')" \
     --argjson upd "$([ "${#upd[@]}" -gt 0 ] && names_json "${upd[@]}" || echo '[]')" \
     '{group: $g, payload_sha: $sha, imported: ($all - $failed), updated: ($upd - $failed | unique), failed: $failed, tf_fallback: ($fallback - $failed),
-      state_uploaded: ($st_ok - $failed - $st_failed | unique), state_failed: ($st_failed - $failed | unique)}' \
+      state_uploaded: ($st_ok - $failed - $st_failed | unique), state_failed: ($st_failed - $failed | unique),
+      workspaces: ($ws | with_entries(select(.value as $n | $failed | index($n) == null) | .value = {workflow: .value, group: $g}))}' \
     >"$EXPORT_DIR/.import-result.$seg.json"
 
   if [ "${#failed[@]}" -gt 0 ]; then
@@ -1136,7 +1203,7 @@ probe_import() {
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   ws_jq_args
-  name="$("$JQ_BIN" -r "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'first(.[] | select(.ResourceName | ws_selected) | .ResourceName) // empty' "$f")"
+  name="$("$JQ_BIN" -r "${WS_JQ_ARGS[@]}" "$WS_SCOPE_JQ"'first(.[] | select(ws_of | ws_selected) | .ResourceName) // empty' "$f")"
   [ -n "$name" ] || return 0
   dir="$(mktemp -d "$EXPORT_DIR/.probe.XXXXXX")"
   probe="$dir/$(basename "$f")"
@@ -1325,7 +1392,7 @@ clean:Remove local working artifacts
 completion:Print a shell completion script
 update:Pull the latest migrator version (git) and rebuild the image if needed"
 SG_COMMANDS="$(printf '%s\n' "$SG_COMMAND_DESCS" | cut -d: -f1 | tr '\n' ' ' | sed 's/ $//')"
-SG_OPTIONS="--org --region --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --region --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group --workflow -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1351,7 +1418,7 @@ _sg_migrate() {
     --export-dir) COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
     --mapping | --tfvars) COMPREPLY=(\$(compgen -f -- "\$cur")); return ;;
     --region) COMPREPLY=(\$(compgen -W "eu us" -- "\$cur")); return ;;
-    --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag | --set | --cloud-connector | --vcs-connector | --runner-group | --workflow-group) COMPREPLY=(); return ;;
+    --org | --concurrency | --project | --workspace | --exclude-workspace | --tag | --exclude-tag | --set | --cloud-connector | --vcs-connector | --runner-group | --workflow-group | --workflow) COMPREPLY=(); return ;;
     completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur")); return ;;
   esac
   for w in "\${COMP_WORDS[@]:1:COMP_CWORD-1}"; do
@@ -1409,7 +1476,8 @@ $(printf '%s\n' "$SG_COMMAND_DESCS" | sed "s/.*/    '&'/")
     '--cloud-connector[Cloud connector for this run (kind looked up in SG)]:id' \\
     '--vcs-connector[VCS connector for this run (kind looked up in SG)]:id' \\
     '--runner-group[Private runner group for this run (shared = SG runners)]:name' \\
-    '--workflow-group[Workflow group for the --project workflows]:name' \\
+    '--workflow-group[Workflow group for the --workspace or --project workflows]:name' \\
+    '--workflow[Workflow to migrate the --workspace into]:name' \\
     '(-v --verbose)-v[Same as --verbose]' \\
     '(-v --verbose)--verbose[Show full terraform/tool output]' \\
     '(-y --yes)-y[Same as --yes]' \\
@@ -1539,6 +1607,11 @@ main() {
       shift
       ;;
     --workflow-group=*) WORKFLOW_GROUP="${1#*=}" ;;
+    --workflow)
+      WORKFLOW_NAME="$2"
+      shift
+      ;;
+    --workflow=*) WORKFLOW_NAME="${1#*=}" ;;
     -h | --help)
       usage
       exit 0
@@ -1572,7 +1645,7 @@ main() {
   # The run configuration flags (lib/scope.sh) shape a run, not the file.
   case "$CMD" in
   init | clean | completion)
-    overlay_requested && die "--set / --cloud-connector / --vcs-connector / --runner-group / --workflow-group apply to a run (apply, import, all), not to '$CMD' — edit $(sg_rel "$TFVARS") instead"
+    overlay_requested && die "--set / --cloud-connector / --vcs-connector / --runner-group / --workflow-group / --workflow apply to a run (apply, import, all), not to '$CMD' — edit $(sg_rel "$TFVARS") instead"
     ;;
   *)
     export SG_API_TOKEN SG_BASE_URL

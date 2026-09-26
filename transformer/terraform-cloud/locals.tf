@@ -67,18 +67,31 @@ locals {
   # ResourceName must be 1-100 chars; SG's name convention is ^[-a-zA-Z0-9_]+$.
   # TFC workspace names already satisfy both, so for normal inputs this is a
   # no-op; the steps below defensively guarantee a valid, unique name and the
-  # summary reports any workspace that was actually renamed.
+  # summary reports any workspace that was actually renamed. An explicit
+  # workspaceOverrides[name].workflowName is used as-is (validated in
+  # variables.tf) and skips these steps.
+  explicitNames = {
+    for name in local.workflowNames : name => var.workspaceOverrides[name].workflowName
+    if try(var.workspaceOverrides[name].workflowName, null) != null
+  }
   #   1. replace any disallowed character with "-"
-  nameCleaned = { for name in local.workflowNames : name => replace(name, "/[^-a-zA-Z0-9_]/", "-") }
+  nameCleaned = { for name in local.workflowNames : name => replace(name, "/[^-a-zA-Z0-9_]/", "-") if !contains(keys(local.explicitNames), name) }
   #   2. enforce the 100-char maximum
   nameTruncated = { for name, cleaned in local.nameCleaned : name => length(cleaned) > 100 ? substr(cleaned, 0, 100) : cleaned }
   #   3. group originals by their sanitized name to detect collisions
   sanitizedGroups = { for name, san in local.nameTruncated : san => name... }
   #   4. disambiguate collisions with a short deterministic suffix (<=100 chars)
-  resourceNames = {
+  resourceNames = merge({
     for name, san in local.nameTruncated :
     name => length(local.sanitizedGroups[san]) > 1 ? "${length(san) > 93 ? substr(san, 0, 93) : san}-${substr(md5(name), 0, 6)}" : san
-  }
+  }, local.explicitNames)
+  # A name is unique within a workflow group. Generated names never clash (step
+  # 4), so a clash always involves an explicit workflowName; it fails the apply
+  # (precondition on local_file.data) instead of being suffixed silently.
+  nameClashes = [
+    for key, names in { for name in local.workflowNames : "${local.workflowGroups[name]}/${local.resourceNames[name]}" => name... } :
+    "${key} (workspaces ${join(", ", names)})" if length(names) > 1
+  ]
 
   # TFC-specific variables (TFC_*, TFE_* by default) are meaningless in SG and
   # are stripped; recorded per workspace so the summary can list them.
@@ -168,12 +181,16 @@ locals {
     for wsName, wsId in local.selectedWorkspaces : wsName => merge({
       CLIConfiguration = {
         "WorkflowGroup" : {
-          # SG workflow group per TFC project: projectOverrides[<project>].workflowGroup,
-          # else tfc-<project>. The importer reads it from here (reused when it
-          # exists, created otherwise); the payload file is still named by project.
+          # SG workflow group: workspaceOverrides[<ws>].workflowGroup, else
+          # projectOverrides[<project>].workflowGroup, else tfc-<project>. The
+          # importer reads it from here (reused when it exists, created
+          # otherwise); every payload file holds a single group.
           "name" : local.workflowGroups[wsName]
         },
         "TfStateFilePath" : "${abspath(path.root)}/../../${var.exportPath}/states/${data.tfe_workspace.data[wsName].name}.tfstate"
+        # The source TFC workspace: the later phases select and match entries
+        # by it, because ResourceName may be an explicit workflowName.
+        "TfcWorkspace" : wsName
       }
       ResourceName = local.resourceNames[wsName]
       Description  = ""
@@ -282,14 +299,12 @@ locals {
     }, { for k, v in { RunnerConstraints = local.runnerConstraints[wsName] } : k => v if v != null })
   }
 
-  # Group payloads by TFC project so each project imports into its own SG
-  # workflow group (the bulk import takes a single --workflow-group per file).
+  # Group payloads into one file per (TFC project, SG workflow group): the bulk
+  # import takes a single --workflow-group per file. A workspace in its
+  # project's group lands in sg-payload.<project>.json; one with its own
+  # workspaceOverrides[<ws>].workflowGroup in sg-payload.<project>.<group>.json
+  # (project slugs never contain a dot, so "<project>" stays the part before it).
   projectsUsed = toset(values(local.workflowProject))
-
-  payloadByProject = {
-    for pid in local.projectsUsed :
-    pid => [for name, payload in local.workflowPayload : payload if local.workflowProject[name] == pid]
-  }
 
   # project id => filesystem-safe segment for the per-project payload filename.
   projectFileSegment = {
@@ -298,12 +313,32 @@ locals {
   }
 
   # SG workflow group per project: projectOverrides[<name>].workflowGroup, else
-  # tfc-<segment>; and the same per workspace for the payload and the summary.
+  # tfc-<segment>; per workspace, workspaceOverrides[<ws>].workflowGroup wins.
   projectGroups = {
     for pid in local.projectsUsed :
     pid => try(var.projectOverrides[try(local.projectNames[pid], pid)].workflowGroup, null) != null ? var.projectOverrides[try(local.projectNames[pid], pid)].workflowGroup : "tfc-${local.projectFileSegment[pid]}"
   }
-  workflowGroups = { for name, pid in local.workflowProject : name => local.projectGroups[pid] }
+  workspaceGroupOverrides = {
+    for name in local.workflowNames : name => var.workspaceOverrides[name].workflowGroup
+    if try(var.workspaceOverrides[name].workflowGroup, null) != null && try(var.workspaceOverrides[name].workflowGroup, null) != try(local.projectGroups[local.workflowProject[name]], null)
+  }
+  workflowGroups = { for name, pid in local.workflowProject : name => try(local.workspaceGroupOverrides[name], local.projectGroups[pid]) }
+
+  # ws => payload file segment, and the payloads per segment.
+  fileSegments = {
+    for name, pid in local.workflowProject :
+    name => contains(keys(local.workspaceGroupOverrides), name) ? "${local.projectFileSegment[pid]}.${replace(lower(local.workspaceGroupOverrides[name]), "/[^a-z0-9-]+/", "-")}" : local.projectFileSegment[pid]
+  }
+  payloadByFile = {
+    for seg in distinct(values(local.fileSegments)) :
+    seg => [for name, payload in local.workflowPayload : payload if local.fileSegments[name] == seg]
+  }
+  # Two group names with the same slug would share a file: refused (precondition).
+  mixedGroupFiles = [
+    for seg in distinct(values(local.fileSegments)) :
+    "sg-payload.${seg}.json (${join(", ", distinct([for name, s in local.fileSegments : local.workflowGroups[name] if s == seg]))})"
+    if length(distinct([for name, s in local.fileSegments : local.workflowGroups[name] if s == seg])) > 1
+  ]
 
   # Machine-readable migration summary (also rendered to markdown).
   summary = {
@@ -315,18 +350,30 @@ locals {
     tfWorkspaceIgnoreNames = var.tfWorkspaceIgnoreNames
     tfProjects             = var.tfProjects
     unknownProjects        = local.unknownProjects
-    projectWorkspaceCounts = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length(local.payloadByProject[pid]) }
-    # Per project (raw TFC name): payload file segment, SG workflow group, size.
+    projectWorkspaceCounts = { for pid in local.projectsUsed : try(local.projectNames[pid], pid) => length([for name, p in local.workflowProject : name if p == pid]) }
+    # Per project (raw TFC name): payload file segment, SG workflow group, size
+    # (all of the project's workspaces, including those in their own group).
     projects = {
       for pid in local.projectsUsed :
       try(local.projectNames[pid], pid) => {
         segment        = local.projectFileSegment[pid]
         workflowGroup  = local.projectGroups[pid]
-        workspaceCount = length(local.payloadByProject[pid])
+        workspaceCount = length([for name, p in local.workflowProject : name if p == pid])
+      }
+    }
+    # Per payload file segment: project, SG workflow group, size.
+    payloadFiles = {
+      for seg, payloads in local.payloadByFile :
+      seg => {
+        project        = local.workspaceProjects[[for name, s in local.fileSegments : name if s == seg][0]]
+        workflowGroup  = payloads[0].CLIConfiguration.WorkflowGroup.name
+        workspaceCount = length(payloads)
       }
     }
     workspaceProjects       = local.workspaceProjects # ws => raw TFC project name
     workflowGroups          = local.workflowGroups    # ws => SG workflow group
+    workspaceGroupOverrides = local.workspaceGroupOverrides
+    workflowNames           = local.resourceNames # ws => SG workflow name
     unknownProjectOverrides = local.unknownProjectOverrides
     skippedSensitiveVars    = { for name, vars in local.sensitiveVars : name => vars if length(vars) > 0 }
     strippedVars            = { for name, vars in local.strippedVars : name => vars if length(vars) > 0 }
@@ -343,7 +390,10 @@ locals {
     tfcTerraformVersions      = { for name in local.workflowNames : name => data.tfe_workspace.data[name].terraform_version }
     terraformVersionFallbacks = var.SGTerraformVersionSource == "carry" ? local.versionFallbacks : {}
     nonRemoteExecutionModes   = local.nonRemoteModes
-    renamedWorkspaces         = { for name in local.workflowNames : name => local.resourceNames[name] if local.resourceNames[name] != name }
-    variableSetsReminder      = "TFC Variable Set variables are merged by the 'enrich' step (non-sensitive only). Sensitive set vars can't be read from the API — recreate them as SG secrets; see the enrich step output."
+    # Sanitized names (renamedWorkspaces) and explicit workflowName overrides
+    # (renamedWorkflows) are reported apart: only the first may need a look.
+    renamedWorkspaces    = { for name in local.workflowNames : name => local.resourceNames[name] if local.resourceNames[name] != name && !contains(keys(local.explicitNames), name) }
+    renamedWorkflows     = { for name, wf in local.explicitNames : name => wf if wf != name }
+    variableSetsReminder = "TFC Variable Set variables are merged by the 'enrich' step (non-sensitive only). Sensitive set vars can't be read from the API — recreate them as SG secrets; see the enrich step output."
   }
 }
