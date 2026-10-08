@@ -220,7 +220,7 @@ sg_create_workflow() {
 # only accepts a literal "HTTP/1.1 200 OK", so the migrator re-uploads whatever
 # sg-cli reports as failed (import_bulk) — drop that once sg-cli is fixed.
 sg_upload_tfstate() {
-  local url code body
+  local url code body resp why msg
   body="$(sg_api_get "$(wf_url "$1" "$2")tfstate_upload_url" 2>/dev/null)" || {
     printf 'no upload URL (HTTP %s)' "$SG_HTTP_CODE"
     return 1
@@ -230,12 +230,25 @@ sg_upload_tfstate() {
     printf 'no upload URL in the API response'
     return 1
   }
-  code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+  resp="$(mktemp)"
+  code="$(curl -sS -o "$resp" -w '%{http_code}' -X PUT \
     -H "Content-Type: application/json" -H "x-ms-blob-type: BlockBlob" \
     -T "$3" "$url" 2>/dev/null)" || true
   code="$(sg_norm_code "$code")"
-  case "$code" in 2*) return 0 ;; esac
-  printf 'store answered HTTP %s' "$code"
+  case "$code" in 2*)
+    rm -f "$resp"
+    return 0
+    ;;
+  esac
+  # S3 and Azure Blob both answer errors as XML with <Code> and <Message>.
+  why="$(sed -n 's:.*<Code>\([^<]*\)</Code>.*:\1:p' "$resp" | head -n1)"
+  msg="$(sed -n 's:.*<Message>\([^<]*\)</Message>.*:\1:p' "$resp" | head -n1)"
+  rm -f "$resp"
+  [ -n "$msg" ] && why="${why:+$why: }$msg"
+  printf 'store answered HTTP %s%s' "$code" "${why:+ ($why)}"
+  # A private runner's URL is signed with its group's storage backend
+  # credentials, so a 403 is about that bucket/container, not the SG token.
+  [ "$code" = 403 ] && printf ' — the URL is signed with the runner group'"'"'s storage backend credentials; check they may write to its bucket/container (and use its KMS key)'
   return 1
 }
 
