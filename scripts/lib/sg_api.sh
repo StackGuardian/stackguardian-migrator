@@ -169,7 +169,29 @@ _sg_wf_call() {
 sg_update_workflow() {
   local name
   name="$("$(sg_resolve jq sg_ensure_jq)" -r '.ResourceName' <<<"$2")"
-  _sg_wf_call PATCH "$(wf_url "$1" "$name")" "$(_sg_wf_body "$2")"
+  _sg_wf_call PATCH "$(wf_url "$1" "$name")" "$(_sg_wf_preset_fill "$(_sg_wf_body "$2")")"
+}
+
+# _sg_wf_preset_fill <body-json> — the body with the TerraformConfig keys it
+# leaves to the execution preset (SG_PRESET_JSON) filled in from it, the way
+# the create API does. PATCH skips the preset and replaces TerraformConfig as a
+# whole, so without this an update wipes the version / runner-provided binary
+# (terraformVersion = mount target + terraformBinPath) the create filled in.
+# RunnerConstraints likewise: the API validates the body alone (no runner =
+# shared), so a preset binary path without the preset's private runner is
+# rejected with "terraformBinPath: only works on private runners".
+_sg_wf_preset_fill() {
+  [ -n "${SG_PRESET_JSON:-}" ] || {
+    printf '%s' "$1"
+    return
+  }
+  "$(sg_resolve jq sg_ensure_jq)" -c --argjson p "$SG_PRESET_JSON" '
+    (((if .WfType == "OPENTOFU" then $p.openTofuDefaults else $p.terraformDefaults end) // {}).TerraformConfig // {}) as $d
+    | if (.WfType == "TERRAFORM" or .WfType == "OPENTOFU") and (.TerraformConfig | type) == "object" then
+        reduce ("terraformVersion", "terraformBinPath", "wfStepTemplateRevisionId") as $k (.;
+          if (.TerraformConfig | has($k) | not) and ($d[$k] // "" | length) > 0 then .TerraformConfig[$k] = $d[$k] else . end)
+      else . end
+    | if has("RunnerConstraints") | not and ($p.RunnerConstraints // {} | length) > 0 then .RunnerConstraints = $p.RunnerConstraints else . end' <<<"$1"
 }
 
 # sg_create_workflow <group> <entry-json> — POST one payload entry; when the
@@ -252,7 +274,7 @@ sg_preset_version_desc() {
   printf '%s' "$p" | "$(sg_resolve jq sg_ensure_jq)" -r --arg t "${2:-TERRAFORM}" '
     (if $t == "OPENTOFU" then "OpenTofu" else "Terraform" end) as $tool
     | ((if $t == "OPENTOFU" then .openTofuDefaults else .terraformDefaults end // {}).TerraformConfig // {}) as $c
-    | (if (($c.terraformBinPath // []) | length) > 0 then "runner-provided binary \($c.terraformBinPath[0].source // "")"
+    | (if (($c.terraformBinPath // []) | length) > 0 then "runner-provided binary \($c.terraformBinPath[0].target // $c.terraformBinPath[0].source // "")"
        elif ($c.terraformVersion // "") == "" then (if $t == "OPENTOFU" then "managed OpenTofu (platform default)" else "managed Terraform 1.5.7 (platform default)" end)
        else "\($tool) \($c.terraformVersion | ltrimstr("TERRAFORM-") | ltrimstr("OPENTOFU-"))" end)
       + (if ($c.wfStepTemplateRevisionId // "") != "" then " with runtime image \($c.wfStepTemplateRevisionId)" else "" end)' 2>/dev/null

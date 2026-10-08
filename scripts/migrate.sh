@@ -1290,7 +1290,11 @@ cmd_import() {
     SG_DEFAULT_TF_VERSION="${SG_DEFAULT_TF_VERSION:-$(tfvars_get '.SGDefaultTerraformVersion' TERRAFORM-1.5.7)}"
   fi
   # shellcheck disable=SC2034  # read by report.sh (plan) and checklist.sh
-  SG_PRESET_JSON="$(sg_execution_preset)" || SG_PRESET_JSON=""
+  # Also what sg_update_workflow fills in: an update skips the preset.
+  SG_PRESET_JSON="$(sg_execution_preset)" || {
+    SG_PRESET_JSON=""
+    sg_warn "could not read the execution preset of $ORG — workflows that already exist would be updated without the preset's Terraform version / binary"
+  }
   preset_labels
   show_import_plan "${PF[@]}"
   if [ "${#PLAN_PROBLEMS[@]}" -gt 0 ]; then

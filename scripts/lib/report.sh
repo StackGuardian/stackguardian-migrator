@@ -104,7 +104,7 @@ preset_labels() {
   if [ -n "${SG_PRESET_JSON:-}" ]; then
     SG_PRESET_TFV="$(printf '%s' "$SG_PRESET_JSON" | "$JQ_BIN" -r '
       ((.terraformDefaults // {}).TerraformConfig // {}) as $c
-      | if (($c.terraformBinPath // []) | length) > 0 then "bin:\($c.terraformBinPath[0].source // "")"
+      | if (($c.terraformBinPath // []) | length) > 0 then "bin:\($c.terraformBinPath[0].target // $c.terraformBinPath[0].source // "")"
         elif ($c.terraformVersion // "") == "" then "platform default"
         else ($c.terraformVersion | ltrimstr("TERRAFORM-")) end')"
     SG_PRESET_RUNNER_SHORT="$(printf '%s' "$SG_PRESET_JSON" | "$JQ_BIN" -r '(.RunnerConstraints // {}) | if (.type // "shared") == "private" then "private:\((.names // []) | join(","))" else "shared" end')"
