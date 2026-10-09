@@ -93,6 +93,12 @@ PREFLIGHT_DONE=0
 FRESH=0
 DRY_RUN=0
 SECRET_STUBS=1
+# How a re-import treats the variables of a workflow that already exists in SG
+# (env vars + Terraform inputs): merge (default; SG-only variables are kept,
+# the migration's values win), add (only new names are added) or replace (the
+# workflow gets exactly the migrated set). Read by sg_update_workflow.
+VARS_MODE=merge
+VARS_MODE_FLAG=""
 VERBOSE="${SG_VERBOSE:-0}"
 CONC="${SG_CONCURRENCY:-4}"
 TF_PARALLELISM="${SG_TF_PARALLELISM:-20}"
@@ -173,6 +179,12 @@ Options:
                      created in StackGuardian ('all' still runs the local export phases);
                      the plan is also written to export/run-result.json and run-summary.md
   --no-secret-stubs  Do not create placeholder SG secrets for sensitive variables
+  --merge-vars       Re-import into an existing workflow: keep the variables added in SG,
+                     overwrite the ones the migration sets (default)
+  --add-vars         Re-import: keep every variable the workflow has, values included;
+                     only add the names it does not have yet
+  --replace-vars     Re-import: drop the workflow's variables and set exactly the migrated
+                     ones (variables added in SG are lost)
   --fresh            Ignore the saved run state: redo every phase and re-import everything
   --project NAME     Only handle this TFC project, by name or slug (repeatable; apply exports
                      only its workspaces, later phases use sg-payload.<slug>.json)
@@ -1396,7 +1408,7 @@ clean:Remove local working artifacts
 completion:Print a shell completion script
 update:Pull the latest migrator version (git) and rebuild the image if needed"
 SG_COMMANDS="$(printf '%s\n' "$SG_COMMAND_DESCS" | cut -d: -f1 | tr '\n' ' ' | sed 's/ $//')"
-SG_OPTIONS="--org --region --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group --workflow -v --verbose -y --yes -h --help --native --local --build"
+SG_OPTIONS="--org --region --export-dir --tfvars --mapping --concurrency --no-create-groups --no-variable-sets --no-vcs-triggers --skip-preflight --dry-run --no-secret-stubs --merge-vars --add-vars --replace-vars --fresh --project --workspace --exclude-workspace --tag --exclude-tag --all --upgrade --set --cloud-connector --vcs-connector --runner-group --workflow-group --workflow -v --verbose -y --yes -h --help --native --local --build"
 
 # cmd_completion <bash|zsh> — print a completion script for sg-migrate.sh /
 # migrate.sh to stdout. Both shells fall back to the basename when the command
@@ -1468,6 +1480,9 @@ $(printf '%s\n' "$SG_COMMAND_DESCS" | sed "s/.*/    '&'/")
     '--skip-preflight[Skip the preflight checks]' \\
     '--dry-run[With import or all: show the plan and stop before importing]' \\
     '--no-secret-stubs[Do not create placeholder SG secrets for sensitive vars]' \\
+    '(--add-vars --replace-vars)--merge-vars[Re-import: keep SG-added vars, migrated values win]' \\
+    '(--merge-vars --replace-vars)--add-vars[Re-import: keep existing vars and values, add new ones]' \\
+    '(--merge-vars --add-vars)--replace-vars[Re-import: set exactly the migrated vars]' \\
     '--fresh[Ignore saved run state: redo every phase]' \\
     '*--project[Only this TFC project (name or slug)]:project' \\
     '*--workspace[Only matching workspaces (glob)]:glob' \\
@@ -1558,6 +1573,15 @@ main() {
     --fresh) FRESH=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --no-secret-stubs) SECRET_STUBS=0 ;;
+    --merge-vars | --add-vars | --replace-vars)
+      [ -z "$VARS_MODE_FLAG" ] || [ "$VARS_MODE_FLAG" = "$1" ] || {
+        echo "$VARS_MODE_FLAG and $1 cannot be combined: pick one way to treat the variables of existing workflows" >&2
+        exit 1
+      }
+      VARS_MODE_FLAG="$1"
+      VARS_MODE="${1#--}"
+      VARS_MODE="${VARS_MODE%-vars}"
+      ;;
     --project)
       PROJECT_FILTER+=("$2")
       shift

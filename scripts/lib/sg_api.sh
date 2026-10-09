@@ -166,10 +166,73 @@ _sg_wf_call() {
 # "Workflow name not unique", but the API answers 409 "Workflow ID not unique",
 # so re-importing an existing workflow fails inside sg-cli; import_bulk
 # catches that 409 and updates through here. Remove once sg-cli handles it.
+#
+# PATCH replaces EnvironmentVariables and iacInputData as a whole, so unless
+# VARS_MODE is "replace" the body's variables are first merged with the ones
+# the workflow has now (_sg_wf_vars_merge): variables added in SG after the
+# migration survive a re-import. A workflow that cannot be read is not
+# updated — patching blind would drop exactly those variables.
 sg_update_workflow() {
-  local name
+  local name body live rc=0
   name="$("$(sg_resolve jq sg_ensure_jq)" -r '.ResourceName' <<<"$2")"
-  _sg_wf_call PATCH "$(wf_url "$1" "$name")" "$(_sg_wf_preset_fill "$(_sg_wf_body "$2")")"
+  body="$(_sg_wf_body "$2")"
+  if [ "${VARS_MODE:-merge}" != replace ]; then
+    live="$(sg_get_workflow "$1" "$name")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf '%s (reading the workflow to merge its variables)\n' "$(tail -n1 <<<"$live")"
+      return "$rc"
+    fi
+    body="$(_sg_wf_vars_merge "$VARS_MODE" "$live" "$body")"
+  fi
+  _sg_wf_call PATCH "$(wf_url "$1" "$name")" "$(_sg_wf_preset_fill "$body")"
+}
+
+# sg_get_workflow <group> <wf> — the workflow as the API returns it (the
+# object inside msg/data), one line of JSON. On failure prints
+# "<http-code>: <body>" like _sg_wf_call. 0/22/1.
+sg_get_workflow() {
+  local tmp rc=0
+  tmp="$(mktemp)"
+  # Not a $(...) capture: SG_HTTP_CODE must survive into this shell.
+  sg_api_raw GET "$(wf_url "$1" "$2")" >"$tmp" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    "$(sg_resolve jq sg_ensure_jq)" -c 'if (.msg | type) == "object" then .msg elif (.data | type) == "object" then .data else . end
+      | if type == "object" then . else error("not a workflow") end' "$tmp" 2>/dev/null || {
+      printf '%s: unexpected response: %s\n' "$SG_HTTP_CODE" "$(head -c 300 "$tmp" | tr -d '\n')"
+      rc=1
+    }
+  else
+    printf '%s: %s\n' "$SG_HTTP_CODE" "$(tr -d '\n' <"$tmp")"
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# _sg_wf_vars_merge <merge|add> <live-workflow-json> <body-json> — the body
+# with its variables merged into the ones the workflow already has:
+# EnvironmentVariables by varName, VCSConfig.iacInputData.data by key.
+# Variables only the workflow has are kept either way; for a name both have,
+# "merge" takes the body's value (the migration wins) and "add" keeps the
+# workflow's (only new names are added). Existing entries keep their order,
+# new ones are appended. A key the body leaves out is left out, so the PATCH
+# does not touch it.
+_sg_wf_vars_merge() {
+  "$(sg_resolve jq sg_ensure_jq)" -c --arg mode "$1" --argjson live "$2" '
+    (($live.EnvironmentVariables // []) | if type == "array" then . else [] end) as $old
+    | ($old | map(.config.varName?)) as $oldNames
+    | if has("EnvironmentVariables") then
+        (.EnvironmentVariables // []) as $new
+        | ([$new[] | select(.config.varName? as $n | $oldNames | index($n) | not)]) as $added
+        | .EnvironmentVariables = (if $mode == "merge"
+            then [$old[] | .config.varName? as $n | (first($new[] | select(.config.varName? == $n)) // .)] + $added
+            else $old + $added end)
+      else . end
+    | ($live.VCSConfig.iacInputData.data? // null) as $oldData
+    | if (.VCSConfig.iacInputData.data? | type) == "object" and ($oldData | type) == "object" then
+        .VCSConfig.iacInputData.data = (if $mode == "merge"
+          then $oldData + .VCSConfig.iacInputData.data
+          else .VCSConfig.iacInputData.data + $oldData end)
+      else . end' <<<"$3"
 }
 
 # _sg_wf_preset_fill <body-json> — the body with the TerraformConfig keys it
