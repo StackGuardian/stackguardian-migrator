@@ -646,7 +646,7 @@ plan_groups() {
 # (--fresh re-sends everything). Per-workflow failures are surfaced but do not
 # abort the rest of the file.
 do_set_triggers() {
-  local f="$1" seg grp n i wf body sha prev rc=0 skip=0 ok=() failed=() missing=() unchanged=() shas='{}'
+  local f="$1" seg grp n i wf body sha prev live rc=0 skip=0 ok=() failed=() missing=() unchanged=() shas='{}'
   seg="$(seg_of "$f")"
   grp="$(group_for "$seg")"
   prev="$(state_read | "$JQ_BIN" -c --arg s "$seg" '.triggers[$s] // {}')"
@@ -671,6 +671,18 @@ do_set_triggers() {
       unchanged+=("$wf")
       shas="$("$JQ_BIN" -c --arg w "$wf" --arg h "$sha" '.[$w] = $h' <<<"$shas")"
       continue
+    fi
+    # The body carries VCSConfig, Terraform inputs included: send the inputs
+    # the workflow has now (merged on import), not the payload's, so variables
+    # kept by --merge-vars/--add-vars are not overwritten here.
+    if [ "$VARS_MODE" != replace ]; then
+      if ! live="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_get_workflow "$grp" "$wf" 2>/dev/null)"; then
+        sg_warn "  vcs triggers failed: $grp/$wf could not be read ($(tail -n1 <<<"$live"))"
+        failed+=("$wf")
+        rc=1
+        continue
+      fi
+      body="$("$JQ_BIN" -c --argjson l "$live" 'if ($l.VCSConfig.iacInputData? | type) == "object" then .VCSConfig.iacInputData = $l.VCSConfig.iacInputData else . end' <<<"$body")"
     fi
     if SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_set_vcs_triggers "$grp" "$wf" "$body"; then
       ok+=("$wf")

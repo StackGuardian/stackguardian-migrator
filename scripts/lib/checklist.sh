@@ -35,8 +35,10 @@ workflow_for_workspace() {
 # create_secret_stubs — for every skipped sensitive variable: create the SG
 # secret (placeholder value) if missing, reference it from the workflow (env
 # var or IaC input), patch the payload file to match, and record it in state.
+# A variable the workflow already sets to something else (wired up by hand in
+# SG and kept by the import) is left alone and recorded under sensitive_kept.
 create_secret_stubs() {
-  local summary="$EXPORT_DIR/migration-summary.json" ws entry cat var f seg grp wf name ref created=0 reused=0 patched=0 skipped=0 body imported
+  local summary="$EXPORT_DIR/migration-summary.json" ws entry cat var f seg grp wf name ref live cur created=0 reused=0 patched=0 skipped=0 kept=0 body imported
   [ -f "$summary" ] || return 0
   [ "$("$JQ_BIN" '.skippedSensitiveVars | length' "$summary")" -gt 0 ] || return 0
   sg_log "creating placeholder secrets for sensitive variables (value: CHANGE_ME)..."
@@ -58,6 +60,26 @@ create_secret_stubs() {
     fi
     name="$(secret_name_for "$wf" "$var")"
     ref="\${secret::$name}"
+    # The workflow as it is now: the PATCH below replaces EnvironmentVariables /
+    # iacInputData as a whole, so it is built from these, never from the payload.
+    if ! live="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_get_workflow "$grp" "$wf" 2>/dev/null)"; then
+      sg_warn "  $grp/$wf could not be read ($(tail -n1 <<<"$live")) — $entry listed in the checklist only"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if [ "$cat" = "env" ]; then
+      cur="$("$JQ_BIN" -r --arg v "$var" 'first((.EnvironmentVariables // [])[] | select(.config.varName? == $v)) | (.config.textValue // .config.secretId // "set")' <<<"$live")"
+    else
+      cur="$("$JQ_BIN" -r --arg v "$var" '(.VCSConfig.iacInputData.data? // {}) | if has($v) then (.[$v] | if type == "string" then . else tojson end) else empty end' <<<"$live")"
+    fi
+    # Already set on the workflow — by an earlier run (our reference) or by
+    # hand in SG (--merge-vars/--add-vars kept it on the import): leave it.
+    if [ -n "$cur" ] && [ "$cur" != "$ref" ]; then
+      kept=$((kept + 1))
+      state_update 'del(.secrets[$n]) | .sensitive_kept[$k] = {workflow: $w, group: $g, var: $v, category: $c, workspace: $ws, at: $at}' \
+        --arg n "$name" --arg k "$ws|$cat:$var" --arg w "$wf" --arg g "$grp" --arg v "$var" --arg c "$cat" --arg ws "$ws" --arg at "$(state_now)"
+      continue
+    fi
     if sg_secret_exists "$name"; then
       reused=$((reused + 1))
     elif sg_create_secret "$name" "CHANGE_ME" "Placeholder for TFC sensitive variable $entry of workspace $ws — set the real value"; then
@@ -67,25 +89,31 @@ create_secret_stubs() {
       skipped=$((skipped + 1))
       continue
     fi
-    # Reference the secret from the workflow: env var or IaC input value.
+    # Reference the secret from the workflow (env var or IaC input) and patch
+    # the payload file to match.
     f="$EXPORT_DIR/sg-payload.$seg.json"
     if [ "$cat" = "env" ]; then
       "$JQ_BIN" --arg w "$wf" --arg v "$var" --arg r "$ref" 'map(if .ResourceName == $w then
           .EnvironmentVariables = ((.EnvironmentVariables // []) | map(select(.config.varName != $v)) + [{kind:"PLAIN_TEXT", config:{varName:$v, textValue:$r}}]) else . end)' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
-      body="$("$JQ_BIN" -c --arg w "$wf" '.[] | select(.ResourceName == $w) | {EnvironmentVariables}' "$f")"
+      body="$("$JQ_BIN" -c --arg v "$var" --arg r "$ref" '{EnvironmentVariables: ((.EnvironmentVariables // []) | map(select(.config.varName? != $v)) + [{kind:"PLAIN_TEXT", config:{varName:$v, textValue:$r}}])}' <<<"$live")"
     else
       "$JQ_BIN" --arg w "$wf" --arg v "$var" --arg r "$ref" 'map(if .ResourceName == $w then .VCSConfig.iacInputData.data[$v] = $r else . end)' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
-      body="$("$JQ_BIN" -c --arg w "$wf" '.[] | select(.ResourceName == $w) | {VCSConfig}' "$f")"
+      # VCSConfig as imported (PATCH replaces it whole), with the inputs the
+      # workflow has now plus the reference.
+      body="$("$JQ_BIN" -c --arg w "$wf" --arg v "$var" --arg r "$ref" --argjson l "$live" 'first(.[] | select(.ResourceName == $w)) | {VCSConfig}
+        | .VCSConfig.iacInputData.data = (($l.VCSConfig.iacInputData.data? // {} | if type == "object" then . else {} end) + {($v): $r})' "$f")"
     fi
-    if SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_patch_workflow "$grp" "$wf" "$body"; then
+    if [ "$cur" = "$ref" ]; then
+      : # an earlier run already wired it up
+    elif SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_patch_workflow "$grp" "$wf" "$body"; then
       patched=$((patched + 1))
     else
       sg_warn "  secret $name created but $grp/$wf could not be updated to reference it"
     fi
-    state_update '.secrets[$n] = {workflow: $w, group: $g, var: $v, category: $c, workspace: $ws, at: $at}' \
-      --arg n "$name" --arg w "$wf" --arg g "$grp" --arg v "$var" --arg c "$cat" --arg ws "$ws" --arg at "$(state_now)"
+    state_update 'del(.sensitive_kept[$k]) | .secrets[$n] = {workflow: $w, group: $g, var: $v, category: $c, workspace: $ws, at: $at}' \
+      --arg n "$name" --arg k "$ws|$cat:$var" --arg w "$wf" --arg g "$grp" --arg v "$var" --arg c "$cat" --arg ws "$ws" --arg at "$(state_now)"
   done < <("$JQ_BIN" -r '.skippedSensitiveVars | to_entries[] | .key as $ws | .value[] | "\($ws)\t\(.)"' "$summary")
-  sg_log "secret stubs: $created created, $reused already existed (kept — a secret's value is never overwritten), $patched workflow(s) now reference them, $skipped skipped"
+  sg_log "secret stubs: $created created, $reused already existed (kept — a secret's value is never overwritten), $patched workflow(s) now reference them$([ "$kept" -gt 0 ] && printf ', %s already set on the workflow (left as is)' "$kept"), $skipped skipped"
   return 0
 }
 
@@ -123,7 +151,7 @@ write_checklist() {
   # --- collect the items once (markdown lines) --------------------------------
   i_secrets="$(printf '%s' "$st" | "$JQ_BIN" -r --arg ui "$SG_UI_URL" --arg org "$ORG" '.secrets // {} | to_entries[] | "- [ ] `\(.key)` — \(.value.category) var `\(.value.var)` of [\(.value.group)/\(.value.workflow)](\($ui)/orchestrator/orgs/\($org)/wfgrps/\(.value.group)/wfs/\(.value.workflow))"')"
   if [ -f "$summary" ]; then
-    i_unstubbed="$("$JQ_BIN" -r --argjson stubbed "$(printf '%s' "$st" | "$JQ_BIN" -c '[.secrets // {} | .[] | "\(.workspace)|\(.category):\(.var)"]')" \
+    i_unstubbed="$("$JQ_BIN" -r --argjson stubbed "$(printf '%s' "$st" | "$JQ_BIN" -c '[.secrets // {} | .[] | "\(.workspace)|\(.category):\(.var)"] + (.sensitive_kept // {} | keys)')" \
       '.skippedSensitiveVars | to_entries[] | .key as $ws | .value[] | select(($ws + "|" + .) as $k | $stubbed | index($k) == null) | "- [ ] `\(.)` of workspace `\($ws)` — no stub created (workflow missing or --no-secret-stubs); create the secret and reference it by hand"' "$summary")"
     i_unpinned="$("$JQ_BIN" -r --arg fb "${SG_TF_FALLBACK_LABEL:-the fallback version}" '.terraformVersionFallbacks | to_entries[] | "- [ ] `\(.key)` was not pinned in TFC (\"\(.value)\"); it runs \($fb) — confirm it is compatible"' "$summary")"
     # Preset mode: no version was sent for anyone, so every workflow may run
