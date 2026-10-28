@@ -1,0 +1,16 @@
+# A native (non-Docker) run on Ubuntu 24.04, i.e. what --native does inside
+# WSL 2: distro bash 5 and jq 1.7, no hcl2json/yajsv on PATH, so the tests
+# also cover the pinned downloads into the tool cache (sg_ensure_*; needs
+# network at test time).
+FROM ubuntu:24.04
+
+ARG BATS_VERSION=1.11.1
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git jq python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C /tmp \
+    && "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local \
+    && rm -rf "/tmp/bats-core-${BATS_VERSION}"
+
+ENV SG_CACHE_DIR=/tmp/sg-cache
+WORKDIR /app
+ENTRYPOINT ["/bin/bash"]
