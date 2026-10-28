@@ -15,7 +15,7 @@ secrets_ui_url() { printf '%s/orchestrator/orgs/%s?tab=secrets' "$SG_UI_URL" "$O
 CHECKLIST_OPEN=0
 
 # secret_name_for <workflow> <var> — SG secret name for a stubbed variable.
-secret_name_for() { printf 'tfc-%s-%s' "$1" "$2" | tr -c 'A-Za-z0-9_-\n' '-' | cut -c1-100; }
+secret_name_for() { printf 'tfc-%s-%s' "$1" "$2" | tr -c 'A-Za-z0-9_\n-' '-' | cut -c1-100; }
 
 # workflow_for_workspace <tfc-workspace-name> — "<seg>\t<group>\t<ResourceName>"
 # for the payload entry of that workspace (ws_of).

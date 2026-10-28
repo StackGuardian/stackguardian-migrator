@@ -462,7 +462,8 @@ mapped_group() {
 # .workflowGroup or tfc-<project>, written by the transformer), else
 # tfc-<segment>. Silent: also runs inside run_parallel subshells.
 group_for() {
-  local seg="$1" f="$EXPORT_DIR/sg-payload.$seg.json" g
+  local seg="$1" f g
+  f="$EXPORT_DIR/sg-payload.$seg.json"
   g="$(mapped_group "$seg")"
   [ -n "$g" ] || { [ -f "$f" ] && g="$(payload_group "$f")"; }
   printf '%s' "${g:-tfc-$seg}"

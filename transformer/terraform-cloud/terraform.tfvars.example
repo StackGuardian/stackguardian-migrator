@@ -1,6 +1,9 @@
 # Terraform Cloud/Enterprise organization name
 tfOrg = "my-terraform-cloud-org"
 
+# TFC/TFE hostname (app.terraform.io for Terraform Cloud)
+tfHostname = "app.terraform.io"
+
 # List of workspace names to export. Use wildcards (e.g., ["*"]) for all workspaces
 workspacenames = ["*"]
 

@@ -108,11 +108,13 @@ _tfvars_map_commented() {
 # _tfvars_str <text> — a quoted HCL string literal (backslashes, quotes and
 # template sequences escaped, so any connector or org name round-trips).
 _tfvars_str() {
-  local s="$1"
+  # The template replacements come from variables: bash 3.2 keeps the
+  # backslash of an escaped "\{" in a literal replacement ($$\{).
+  local s="$1" dl='$${' pc='%%{'
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
-  s="${s//\$\{/\$\$\{}"
-  s="${s//%\{/%%\{}"
+  s="${s//"\${"/$dl}"
+  s="${s//"%{"/$pc}"
   printf '"%s"' "$s"
 }
 
