@@ -10,7 +10,7 @@ RUN go install "github.com/neilpa/yajsv@${YAJSV_VERSION}"
 
 FROM debian:bookworm-slim
 
-ARG TERRAFORM_VERSION=1.9.8
+ARG TOFU_VERSION=1.13.2
 ARG JQ_VERSION=1.8.1
 ARG HCL2JSON_VERSION=0.6.7
 
@@ -18,11 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bash curl ca-certificates git unzip tar coreutils \
     && rm -rf /var/lib/apt/lists/*
 
-# terraform (arch from dpkg: amd64/arm64 — works with or without buildx)
+# OpenTofu runs the transformer (arch from dpkg: amd64/arm64 — works with or
+# without buildx). Native runs fall back to terraform; see sg_tf_bin.
 RUN arch="$(dpkg --print-architecture)" \
-    && curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${arch}.zip" -o /tmp/tf.zip \
-    && unzip /tmp/tf.zip -d /usr/local/bin \
-    && rm /tmp/tf.zip
+    && curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_${arch}.zip" -o /tmp/tofu.zip \
+    && unzip /tmp/tofu.zip tofu -d /usr/local/bin \
+    && rm /tmp/tofu.zip
 
 # jq
 RUN arch="$(dpkg --print-architecture)" \

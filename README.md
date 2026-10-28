@@ -14,7 +14,7 @@ Migrate workloads from other platforms to [StackGuardian Platform](https://app.s
 
 ## Quick start (orchestrated)
 
-`./sg-migrate.sh` runs the whole flow — `terraform apply` → HCL→JSON conversion → schema validation → bulk import — with all tooling (Terraform, `jq`, `hcl2json`, `yajsv`, `sg-cli`) isolated in a Docker image, so it behaves identically on Linux, macOS, and Windows. Docker is required for this path; without it the script automatically falls back to running natively (downloading pinned tools into `.sg/cached/`).
+`./sg-migrate.sh` runs the whole flow — `tofu apply` → HCL→JSON conversion → schema validation → bulk import — with all tooling (OpenTofu, `jq`, `hcl2json`, `yajsv`, `sg-cli`) isolated in a Docker image, so it behaves identically on Linux, macOS, and Windows. Docker is required for this path; without it the script automatically falls back to running natively (downloading pinned tools into `.sg/cached/`).
 
 ```shell
 git clone https://github.com/StackGuardian/stackguardian-migrator.git
@@ -45,7 +45,7 @@ That's it — no IDs to look up and no workflow-group mapping to fill in. `init`
 - **Keeping `terraform.tfvars` current.** After `./sg-migrate.sh update`, `./sg-migrate.sh init --upgrade` appends the settings a new version introduced to your existing file, each with its default and comment, and touches nothing else (no prompts, so it works in CI too; the previous file is kept as `.bak`). A default is the same as leaving the setting out, so this is optional — preflight lists the settings your file predates until you run it.
 - Output is concise by default (terraform's plan/init noise is hidden; shown on error). Add `-v`/`--verbose` for full output. Known API errors come with a hint naming the `terraform.tfvars` field to fix.
 - Flags: `-y` skip the import prompt (required without a terminal, e.g. in CI), `--tfvars FILE` use a tfvars file kept elsewhere, `--concurrency N` parallel jobs, `--org NAME`, `--no-create-groups` require groups to pre-exist, `--skip-preflight`, `--build` rebuild the image, `--native`/`--local` force a local run even when Docker is available, `--mapping FILE` (deprecated group override map, see *Per-project settings*).
-- Tuning via env: `SG_RETRIES`, `SG_TF_PARALLELISM`, `SG_NATIVE=1`, `SG_TFVARS` (same as `--tfvars`), `SG_UI_URL` (base URL for the checklist's links, default `https://app.stackguardian.io`).
+- Tuning via env: `SG_RETRIES`, `SG_TF_PARALLELISM`, `SG_TF_BIN` (the CLI that runs the export on a native run: `tofu` by default, else `terraform`), `SG_NATIVE=1`, `SG_TFVARS` (same as `--tfvars`), `SG_UI_URL` (base URL for the checklist's links, default `https://app.stackguardian.io`).
 - **Running in CI.** Without a terminal every prompt takes its default: `init` cannot run the wizard (it only copies the example file), so generate `terraform.tfvars` once with `init` on a workstation, keep it next to the pipeline (it is gitignored here) and pass it with `--tfvars`; `import`/`all` need `-y`. Pick the scope per trigger with the flags above and the connectors with `--cloud-connector`/`--vcs-connector`/`--workflow-group` when they are trigger inputs too, run `all --dry-run` on a pull request and `-y all` on merge, and publish `export/run-summary.md` (e.g. `cat export/run-summary.md >> "$GITHUB_STEP_SUMMARY"`); `export/run-result.json` has the same data for scripts. Cache `.sg/` and `export/` between runs to keep the resume logic; without them every run re-exports and updates every workflow, which is correct but slower. `export/states/` holds real Terraform state — do not publish it as an artifact.
 - Tab completion for the current shell session: `source <(./sg-migrate.sh completion)` (bash/zsh detected; or pass `bash`/`zsh`). `init` prints this line.
 - TFC auth: set `TFE_TOKEN` (recommended — a long-lived token avoids re-running `terraform login`); otherwise the `terraform login` credentials file is mounted read-only into the container. Tokens are only ever read from the environment; `init` never writes them to disk.
@@ -56,7 +56,7 @@ The manual, step-by-step flow below remains supported for fine-grained control a
 
 - An organization on [StackGuardian Platform](https://app.stackguardian.io)
 - Optionally, pre-configure VCS, cloud integrations or private runners to use when importing into StackGuardian Platform. To run every workflow on a private runner group, set `SGDefaultRunnerConstraints = { type = "private", names = ["<runner-group>"] }` in `terraform.tfvars` (per-project exceptions via `projectOverrides[<project>].RunnerConstraints`, per-workspace via `workspaceOverrides[<name>].RunnerConstraints`).
-- Terraform
+- OpenTofu or Terraform (>= 1.3)
 - [sg-cli](https://github.com/StackGuardian/sg-cli)
 
 With the orchestrated flow the last two come from the Docker image; only `git` and Docker are needed on the host.
@@ -198,6 +198,7 @@ To update workflows with different details, re-run the sg-cli command with the m
 
   A sensitive variable that you wired up in SG yourself (for example `${secret::my-real-secret}`) is left as it is: no placeholder secret is created for it, and the checklist does not list it. If the workflow cannot be read, it is not updated: the failure is reported, the workflow is left untouched, and the next run retries it.
 - **Fail fast.** When more than one workflow is to be imported, the importer first imports a single one (the first selected workflow of the first payload file) and requires both the create and its state upload to succeed before the rest is imported in parallel. An environment problem then costs one workflow, not all of them; the probe workflow is simply updated again with its file.
+- **OpenTofu runs the export.** The Docker image ships OpenTofu; a native run uses `tofu` when it is installed and `terraform` otherwise (`SG_TF_BIN` picks one). The transformer is plain HCL and works with both, and switching between them on the same checkout is fine: the local state carries over, and the provider lock file (gitignored) is rewritten.
 - **State export is idempotent.** Re-running `terraform apply` only pulls state for workspaces not yet exported. Set `forceStateRefresh = true` to re-pull everything. Workspaces not using `remote` execution may export incomplete state — see the summary.
 - **Workflow naming.** `ResourceName` mirrors the TFC workspace name, sanitized to StackGuardian's rules (1-100 chars, `[-a-zA-Z0-9_]`); any rename is listed in the summary and the checklist.
 - **Preflight.** `apply`, `import` and `all` first verify the TFC and SG tokens, the TFC org and workspace selection, and that every connector, secret and runner group referenced in `terraform.tfvars` (globally, per project and per workspace) exists and agrees with the VCS kinds; `projectOverrides`/`workspaceOverrides` keys are checked against the TFC projects and workspaces. Fix what it reports (or re-run `init`); `--skip-preflight` bypasses it.

@@ -136,7 +136,7 @@ Commands:
               nothing else is touched, no prompts)
   preflight   Verify tokens and every connector/runner/org referenced in tfvars
               (runs automatically before apply, import and all)
-  apply       Run the transformer (terraform apply) to generate payloads + state
+  apply       Run the transformer (tofu/terraform apply) to generate payloads + state
   enrich      Merge TFC Variable Set variables into the payloads (via the TFC API)
   convert     Convert HCL-string variables to JSON in each payload (parallel)
   validate    Validate each payload against the SG schema
@@ -218,7 +218,8 @@ Environment:
   SG_API_TOKEN       StackGuardian API token (required for import)
   SG_ORG             StackGuardian org (alternative to --org)
   SG_RETRIES         Import retry attempts on failure (default: 4)
-  SG_TF_PARALLELISM  terraform apply -parallelism (default: 20)
+  SG_TF_BIN          IaC CLI for apply (default: tofu, else terraform)
+  SG_TF_PARALLELISM  tofu/terraform apply -parallelism (default: 20)
   SG_TFVARS          tfvars file to use (same as --tfvars)
   SG_REGION          StackGuardian region (same as --region)
   SG_BASE_URL        StackGuardian API base URL; overrides the region's host
@@ -766,17 +767,18 @@ cmd_clean() {
   sg_success "clean complete"
 }
 
-# tf_init / tf_apply — terraform in the transformer dir, with jq on PATH for the
-# state export's local-exec. Always run in a subshell (sg_run_quiet backgrounds
-# them; the verbose path wraps them in parentheses).
+# tf_init / tf_apply — tofu/terraform ($TF_BIN) in the transformer dir, with jq
+# on PATH for the state export's local-exec. Always run in a subshell
+# (sg_run_quiet backgrounds them; the verbose path wraps them in parentheses).
 # shellcheck disable=SC2120  # extra terraform flags (-no-color) come from the quiet path
-tf_init() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform init -input=false "$@"; }
-tf_apply() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && terraform apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file="$TFVARS" "$@"; }
+tf_init() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && "$TF_BIN" init -input=false "$@"; }
+tf_apply() { cd "$TRANSFORMER_DIR" && export PATH="$TF_PATH" TF_IN_AUTOMATION=1 && "$TF_BIN" apply -auto-approve -compact-warnings -parallelism="$TF_PARALLELISM" -var-file="$TFVARS" "$@"; }
 
 cmd_apply() {
-  phase_begin "apply (terraform)"
+  TF_BIN="$(sg_tf_bin)" || die "${SG_TF_BIN:-neither tofu nor terraform} not found on PATH (SG_TF_BIN picks the CLI)"
+  TF_NAME="$(basename "$TF_BIN")"
+  phase_begin "apply ($TF_NAME)"
   RAN_APPLY=1
-  command -v terraform >/dev/null 2>&1 || die "terraform not found on PATH"
   [ -f "$TFVARS" ] || die "Missing $(sg_rel "$TFVARS"). Run: $PROG init"
   # terraform auto-loads terraform.tfvars from the module dir on top of -var-file.
   if [ "$TFVARS" != "$TFVARS_DEFAULT" ] && [ -f "$TFVARS_DEFAULT" ]; then
@@ -804,13 +806,13 @@ cmd_apply() {
     # Quiet: terraform's init/plan output goes to a log that is shown only on
     # failure; the terminal gets a live progress line per step instead.
     tflog="$(mktemp)"
-    sg_run_quiet "initializing terraform providers" "$([ "$VERBOSE" -eq 1 ] && echo "terraform providers ready")" "$tflog" tf_init -no-color || rc=$?
+    sg_run_quiet "initializing $TF_NAME providers" "$([ "$VERBOSE" -eq 1 ] && echo "$TF_NAME providers ready")" "$tflog" tf_init -no-color || rc=$?
     if [ "$rc" -eq 0 ]; then
       sg_run_quiet "reading workspaces, generating payloads, exporting state" "workspaces read, payloads generated, state exported" "$tflog" \
         tf_apply -no-color ${tfvar_args[@]+"${tfvar_args[@]}"} || rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
-      sg_err "terraform failed (rc=$rc):"
+      sg_err "$TF_NAME failed (rc=$rc):"
       cat "$tflog" >&2
     fi
     rm -f "$tflog"
@@ -1409,7 +1411,7 @@ finish_line() {
 # zsh script shows the descriptions, SG_COMMANDS is derived from the first column.
 SG_COMMAND_DESCS="init:Guided setup — generates terraform.tfvars
 preflight:Verify tokens and every id in terraform.tfvars before running
-apply:Run the transformer (terraform apply)
+apply:Run the transformer (tofu/terraform apply)
 enrich:Merge TFC Variable Set variables into the payloads
 convert:Convert HCL-string variables to JSON
 validate:Validate payloads against the SG schema

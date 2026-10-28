@@ -121,6 +121,17 @@ sg_run_quiet() {
   return "$rc"
 }
 
+# sg_tf_bin — the IaC CLI that runs the transformer: SG_TF_BIN when set, else
+# tofu (what the Docker image ships), else terraform. Prints its path; exit 1
+# when none is on PATH.
+sg_tf_bin() {
+  if [ -n "${SG_TF_BIN:-}" ]; then
+    command -v "$SG_TF_BIN"
+    return
+  fi
+  command -v tofu || command -v terraform
+}
+
 sg_arch() {
   case "$(uname -m)" in
   x86_64 | amd64) echo "amd64" ;;
