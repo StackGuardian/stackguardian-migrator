@@ -25,7 +25,7 @@ load helpers
 
 @test "every script parses with /bin/bash" {
   local f bad=""
-  for f in "$REPO"/sg-migrate.sh "$REPO"/scripts/*.sh "$REPO"/scripts/lib/*.sh "$REPO"/tests/*.sh; do
+  for f in "$REPO"/sg-migrate.sh "$REPO"/scripts/*.sh "$REPO"/scripts/lib/*.sh "$REPO"/tests/*.sh "$REPO"/tests/live/*.sh "$REPO"/tests/live/tfc-fixture/*.sh; do
     /bin/bash -n "$f" 2>&1 || bad="$bad $f"
   done
   [ -z "$bad" ] || { echo "syntax errors in:$bad"; return 1; }
@@ -37,6 +37,6 @@ load helpers
   # The libraries are checked through migrate.sh (-x follows its sources).
   # SC2034 is off: the parser sets globals the sourced libraries read, which
   # shellcheck cannot see across files in that direction.
-  run shellcheck -x -S warning -e SC2034 sg-migrate.sh scripts/*.sh tests/*.sh
+  run shellcheck -x -S warning -e SC2034 sg-migrate.sh scripts/*.sh tests/*.sh tests/live/run.sh tests/live/tfc-fixture/seed_state.sh
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }

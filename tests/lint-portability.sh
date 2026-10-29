@@ -53,7 +53,7 @@ RULES=(
 
 files=("$@")
 if [ "${#files[@]}" -eq 0 ]; then
-  for f in "$REPO"/sg-migrate.sh "$REPO"/scripts/*.sh "$REPO"/scripts/lib/*.sh "$REPO"/tests/*.sh; do
+  for f in "$REPO"/sg-migrate.sh "$REPO"/scripts/*.sh "$REPO"/scripts/lib/*.sh "$REPO"/tests/*.sh "$REPO"/tests/live/*.sh "$REPO"/tests/live/tfc-fixture/*.sh; do
     # The rule table above would match itself.
     [ "$(basename "$f")" = "lint-portability.sh" ] || files+=("$f")
   done

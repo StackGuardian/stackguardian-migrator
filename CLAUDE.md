@@ -77,6 +77,7 @@ for f in export/sg-payload.*.json; do ./scripts/convert_hcl_to_json.sh "$f"; don
 # Tests (tests/README.md): native = macOS /bin/bash 3.2 + BSD tools; docker = gnu (the runtime image), bash32, bsd (Chimera), ubuntu, rhel (UBI 9)
 make test          # tests/run.sh: portability lint, bash -n, shellcheck, bats unit suites
 make test-docker   # the five Linux images; make test-all = both
+make test-live     # tests/live: real TFC + SG sandbox org via op run (make live-seed first; not in test-all)
 
 # Bulk import (from the export dir, sg-cli fetched per README) — once per project file
 export SG_API_TOKEN=<token>

@@ -38,6 +38,10 @@ tools:    jq jq-1.7, hcl2json cached, bats 1.14.0, shellcheck 0.11.0
 
 To confirm the suite does its job, run it against the code before the fixes in this change. The old `secret_name_for` fails on `gnu` and `bash32` with the customer's error (`tr: range-endpoints of '_-\012' are in reverse collating sequence order`), and the lint flags it on every target. The old `_tfvars_str` fails on `bash32` and natively on macOS.
 
+## Live tests
+
+`tests/live/` runs the whole migrator against a real TFC org and a StackGuardian sandbox org, then checks the result through the API. It covers nested workflow groups, create/update/skip, the version-ceiling fallback, state uploads, triggers, secret stubs, variable sets and the vars modes. Known bugs are pinned as `!` lines. It needs credentials (1Password via `op run`) and an org you are free to change, so it is not part of `test-all`. Setup and guards are in [`live/README.md`](live/README.md); run it with `make live-seed` once, then `make test-live`.
+
 ## Not covered yet (next layers)
 
 1. **Integration tests for the import flow.** Commit a mock SG API (`tests/mock/sg_api.py`) and fixture payloads, then run `import` end to end with the real `sg-cli` against the mock. That covers the plan, create/update/skip, PATCH on a 409, the version-ceiling fallback, state upload and retry, triggers, secret stubs, the checklist, `run-result.json`, `--dry-run`, the scope flags and the three vars modes. This has been done by hand before. The switches the mock needs are known: existing groups and workflows, a 409 for an existing name, the ceiling 400, an Azure-style state PUT, and failing a chosen workflow.
