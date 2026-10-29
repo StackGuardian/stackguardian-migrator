@@ -206,4 +206,4 @@ To update workflows with different details, re-run the sg-cli command with the m
 
 ## Running the tests
 
-`make test` runs the test suite on your machine (on macOS that is `/bin/bash` 3.2 with BSD tools, the setup a native run gets). `make test-docker` runs it in four Linux images: the migrator's own image (GNU tools), bash 3.2, a BSD userland (Chimera Linux) and Ubuntu 24.04 (a native run as in WSL 2). `make test-all` does both. Needs [bats-core](https://github.com/bats-core/bats-core) on the host and Docker for the Linux targets; see [tests/README.md](tests/README.md).
+`make test` runs the test suite on your machine (on macOS that is `/bin/bash` 3.2 with BSD tools, the setup a native run gets). `make test-docker` runs it in five Linux images: the migrator's own image (GNU tools), bash 3.2, a BSD userland (Chimera Linux) and Ubuntu 24.04 (a native run as in WSL 2) and RHEL 9 (a native run on a RHEL machine or CI runner). `make test-all` does both. Needs [bats-core](https://github.com/bats-core/bats-core) on the host and Docker for the Linux targets; see [tests/README.md](tests/README.md).

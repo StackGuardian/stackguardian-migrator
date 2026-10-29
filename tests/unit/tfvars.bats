@@ -68,8 +68,9 @@ workspacenames = ["*"]'
   [ -n "$output" ]
   printf '%s\n' "$output" | grep -qx SGDefaultEnableVCSTriggers
   # The original lines are untouched and first; the .bak is the old file.
-  head -3 "$TFVARS" | cmp -s - "$BATS_TEST_TMPDIR/before"
-  cmp -s "$TFVARS.bak" "$BATS_TEST_TMPDIR/before"
+  # (No cmp: minimal RHEL images have no diffutils.)
+  [ "$(head -3 "$TFVARS")" = "$(cat "$BATS_TEST_TMPDIR/before")" ]
+  [ "$(cat "$TFVARS.bak")" = "$(cat "$BATS_TEST_TMPDIR/before")" ]
   tfvars_valid
   [ "$(tfvars_get .tfOrg)" = "acme" ]
   # Nothing left to add.

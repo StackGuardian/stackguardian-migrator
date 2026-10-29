@@ -73,9 +73,9 @@ terraform apply -auto-approve -var-file=terraform.tfvars
 for f in export/sg-payload.*.json; do ./scripts/convert_hcl_to_json.sh "$f"; done
 ./scripts/validate_payload.sh export/sg-payload.*.json
 
-# Tests (tests/README.md): native = macOS /bin/bash 3.2 + BSD tools; docker = gnu (the runtime image), bash32, bsd (Chimera), ubuntu
+# Tests (tests/README.md): native = macOS /bin/bash 3.2 + BSD tools; docker = gnu (the runtime image), bash32, bsd (Chimera), ubuntu, rhel (UBI 9)
 make test          # tests/run.sh: portability lint, bash -n, shellcheck, bats unit suites
-make test-docker   # the four Linux images; make test-all = both
+make test-docker   # the five Linux images; make test-all = both
 
 # Bulk import (from the export dir, sg-cli fetched per README) — once per project file
 export SG_API_TOKEN=<token>

@@ -3,7 +3,7 @@
 
 DOCKER       ?= docker
 TEST_IMAGE   ?= sg-migrator-test
-DOCKER_TESTS := gnu bash32 bsd ubuntu
+DOCKER_TESTS := gnu bash32 bsd ubuntu rhel
 
 .PHONY: test test-native test-docker test-all test-runtime-image $(addprefix test-,$(DOCKER_TESTS))
 

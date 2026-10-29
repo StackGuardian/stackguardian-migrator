@@ -11,8 +11,9 @@ The migrator is bash that runs in three different setups: inside its Docker imag
 | `make test-bash32` | Debian with bash 3.2.57 as `/bin/bash`, jq 1.6 | macOS bash quirks without a Mac; an old jq |
 | `make test-bsd` | Chimera Linux (FreeBSD-derived core tools) | macOS `tr`/`sed`/`grep`/`find` behavior without a Mac |
 | `make test-ubuntu` | Ubuntu 24.04, no hcl2json on PATH | a `--native` run in WSL 2 / on a Linux box, including the pinned tool downloads |
-| `make test-docker` | all four images | |
-| `make test-all` | this machine + all four images | run this before a release |
+| `make test-rhel` | RHEL 9 (Red Hat's UBI image), jq 1.6, no hcl2json on PATH | a `--native` run on a RHEL machine or self-hosted RHEL CI runner |
+| `make test-docker` | all five images | |
+| `make test-all` | this machine + all five images | run this before a release |
 
 Requirements: [bats-core](https://github.com/bats-core/bats-core) for `make test` (`brew install bats-core`), Docker for the rest. `shellcheck` is used when it is installed. The images mount the checkout read-only and keep their tool cache in the container, so a test run never changes the checkout or its `.sg/cached/`.
 
@@ -49,6 +50,8 @@ To confirm the suite does its job, run it against the code before the fixes in t
 - **Real macOS is only tested where a developer runs `make test`.** The `bsd` and `bash32` images come close: Chimera's `tr` accepts `_-\n` like macOS, and the Linux bash 3.2 build reproduces the macOS `$$\{` quirk. They are not macOS, though. Apple's tools are older FreeBSD versions with their own patches.
 - **Windows is covered as WSL 2 only** (the documented setup): the `ubuntu` target plus `gnu` for the container. Git Bash or MSYS isn't tested or supported. It would need `MSYS_NO_PATHCONV` for the `docker -v` arguments.
 - **`hcl2json` doesn't unescape `$${` / `%%{`.** OpenTofu reads `"$${x}"` as `${x}`, but the scripts' `tfvars_get` sees `$${x}`. This only affects names that contain a template sequence, which no real connector or org name does. The test checks the HCL text for that case.
-- **The `ubuntu` target needs network at test time.** It downloads hcl2json into its cache, which is the point of that target.
+- **The `ubuntu` and `rhel` targets need network at test time.** They download hcl2json into their cache, which is the point of those targets.
+- **Minimal images lack common tools.** UBI 9 has no `cmp`/`diff` (diffutils), `unzip`, `ps` or `file`. The scripts don't use them (only `git diff`); keep it that way, and keep tests free of them too.
+- **The `rhel` image is pinned by digest** like `bsd`; refresh it from `registry.access.redhat.com/ubi9/ubi`.
 - **Switching between terraform and tofu on one checkout** was checked by hand with the `local` and `null` providers (both directions plan "No changes"), not with `tfe`. The transformer test layer should cover it.
 - **The `bsd` image is pinned by digest**, so its userland doesn't change under the tests. To refresh it, pull `chimeralinux/chimera` and update the digest in `docker/Dockerfile.bsd`.
