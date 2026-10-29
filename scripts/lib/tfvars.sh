@@ -215,6 +215,10 @@ SGDefaultEnableVCSTriggers = $W_TRIGGERS
 # Re-pull state for every workspace on each apply (default: idempotent)
 forceStateRefresh = false
 
+# Migrate into one parent workflow group: every migrated group becomes its
+# child (e.g. tfc-migration/tfc-<project>). null = top-level groups.
+SGParentWorkflowGroup = $(_tfvars_parent_group)
+
 # Per-project settings, keyed by the TFC project name: connectors, runners,
 # approvers and the workflow group (workflowGroup, default tfc-<project>) for
 # every workspace of that project. Precedence: workspaceOverrides >
@@ -255,6 +259,15 @@ TFVARS
       } >>"$dest"
     fi
   fi
+}
+
+# _tfvars_parent_group — SGParentWorkflowGroup as HCL: W_PARENT_GROUP, else
+# the previous file's value (W_PREV_JSON), else null.
+_tfvars_parent_group() {
+  local v="${W_PARENT_GROUP:-}"
+  [ -n "$v" ] || [ -z "${W_PREV_JSON:-}" ] ||
+    v="$(printf '%s' "$W_PREV_JSON" | "$(sg_resolve jq sg_ensure_jq)" -r '.SGParentWorkflowGroup // empty' 2>/dev/null)"
+  if [ -n "$v" ]; then _tfvars_str "$v"; else printf 'null'; fi
 }
 
 # tfvars_example — the shipped terraform.tfvars.example (every setting, with

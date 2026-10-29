@@ -69,10 +69,20 @@ sg_api_patch() { _sg_api PATCH "$1" "$2" >/dev/null; }
 wfgroup_http_code() { sg_http_code GET "$(sg_org_url)/wfgrps/$1/"; }
 
 # wfgroup_create <group> — create a workflow group (idempotent at call sites).
+# A nested group is a path, parent/child (SGParentWorkflowGroup): the API
+# addresses it as wfgrps/<parent>/<child>/ but creates it under
+# wfgrps/<parent>/wfgrps/; a missing parent is created first.
 wfgroup_create() {
-  local body
-  body="$("$(sg_resolve jq sg_ensure_jq)" -nc --arg n "$1" '{ResourceName:$n, Description:"Created by stackguardian-migrator (Terraform Cloud import)"}')"
-  SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_api_post "$(sg_org_url)/wfgrps/" "$body"
+  local body parent="" url
+  url="$(sg_org_url)/wfgrps/"
+  case "$1" in */*)
+    parent="${1%/*}"
+    [ "$(wfgroup_http_code "$parent")" = "200" ] || wfgroup_create "$parent" || return
+    url="$(sg_org_url)/wfgrps/$parent/wfgrps/"
+    ;;
+  esac
+  body="$("$(sg_resolve jq sg_ensure_jq)" -nc --arg n "${1##*/}" '{ResourceName:$n, Description:"Created by stackguardian-migrator (Terraform Cloud import)"}')"
+  SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_api_post "$url" "$body"
 }
 
 # --- workflows -------------------------------------------------------------

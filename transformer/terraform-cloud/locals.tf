@@ -322,7 +322,10 @@ locals {
     for name in local.workflowNames : name => var.workspaceOverrides[name].workflowGroup
     if try(var.workspaceOverrides[name].workflowGroup, null) != null && try(var.workspaceOverrides[name].workflowGroup, null) != try(local.projectGroups[local.workflowProject[name]], null)
   }
-  workflowGroups = { for name, pid in local.workflowProject : name => try(local.workspaceGroupOverrides[name], local.projectGroups[pid]) }
+  # The group each workflow lands in, as the scripts address it: with
+  # SGParentWorkflowGroup, the path <parent>/<group> of a nested group.
+  groupPrefix    = var.SGParentWorkflowGroup == null ? "" : "${var.SGParentWorkflowGroup}/"
+  workflowGroups = { for name, pid in local.workflowProject : name => "${local.groupPrefix}${try(local.workspaceGroupOverrides[name], local.projectGroups[pid])}" }
 
   # ws => payload file segment, and the payloads per segment.
   fileSegments = {
@@ -357,7 +360,7 @@ locals {
       for pid in local.projectsUsed :
       try(local.projectNames[pid], pid) => {
         segment        = local.projectFileSegment[pid]
-        workflowGroup  = local.projectGroups[pid]
+        workflowGroup  = "${local.groupPrefix}${local.projectGroups[pid]}"
         workspaceCount = length([for name, p in local.workflowProject : name if p == pid])
       }
     }

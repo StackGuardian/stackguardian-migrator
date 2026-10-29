@@ -1002,11 +1002,15 @@ import_bulk() {
     "$JQ_BIN" --argjson u "$upd_names" 'map(select(.ResourceName as $n | $u | index($n) == null))' "$file" >"$create_file"
   fi
 
-  n_direct="$("$JQ_BIN" '[.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)] | length' "$create_file")"
+  # Which workflows take the direct path. TODO(sg-cli): v2.2 answers 403 for a
+  # nested group (parent/child), so every workflow of one goes direct too.
+  local direct='(.VCSConfig.iacInputData.data // {}) | length == 0'
+  [[ "$grp" == */* ]] && direct='true'
+  n_direct="$("$JQ_BIN" "[.[] | select($direct)] | length" "$create_file")"
   with_vars="$create_file"
   if [ "$n_direct" -gt 0 ]; then
     with_vars="$(mktemp)"
-    "$JQ_BIN" 'map(select((.VCSConfig.iacInputData.data // {}) | length > 0))' "$create_file" >"$with_vars"
+    "$JQ_BIN" "map(select($direct | not))" "$create_file" >"$with_vars"
   fi
   if [ "$("$JQ_BIN" length "$with_vars")" -gt 0 ]; then
     cli_out="$(mktemp)"
@@ -1089,7 +1093,13 @@ import_bulk() {
     return "$rc"
   fi
 
-  [ "$VERBOSE" -eq 1 ] && sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
+  if [ "$VERBOSE" -eq 1 ]; then
+    if [ "$direct" = true ]; then
+      sg_log "$n_direct workflow(s) go to the nested group $grp — creating them via the API directly (sg-cli cannot address a nested group)"
+    else
+      sg_log "$n_direct workflow(s) have no Terraform variables — creating them via the API directly (sg-cli drops an empty iacInputData.data)"
+    fi
+  fi
   while IFS= read -r entry; do
     name="$("$JQ_BIN" -r '.ResourceName' <<<"$entry")"
     if err="$(SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_create_workflow "$grp" "$entry" 2>/dev/null)"; then
@@ -1107,7 +1117,7 @@ import_bulk() {
       printf '%s\n' "$line" >>"$out"
       [[ "$line" =~ $TF_CEILING_RE ]] || wf_failed "$grp" "$name" created "$line"
     fi
-  done < <("$JQ_BIN" -c '.[] | select((.VCSConfig.iacInputData.data // {}) | length == 0)' "$create_file")
+  done < <("$JQ_BIN" -c ".[] | select($direct)" "$create_file")
   [ "$create_file" != "$file" ] && rm -f "$create_file"
   return "$rc"
 }

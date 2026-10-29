@@ -100,3 +100,17 @@ workspacenames = ["*"]'
   tfvars_is_null SGDefaultTerraformVersion
   [ "$(tfvars_get_json .myExtra)" = '{"a":1}' ]
 }
+
+@test "tfvars_write: SGParentWorkflowGroup null by default, kept from the previous file" {
+  W_TFORG=acme W_WSNAMES_JSON='["*"]' W_EXPORT_STATE=true W_TAGS_JSON=null W_IGNORE_TAGS_JSON=null
+  W_APPROVERS_JSON='[]' W_REPO_PREFIX='https://github.com/acme/' W_VCS_INTEGRATION=/integrations/gh
+  W_DPC_JSON='[]' W_RUNNER_JSON=null W_DEST_KIND=GITHUB_COM W_TF_VERSION=null W_TRIGGERS=true W_IGNORE_PATTERNS_JSON='[]'
+  W_PREV_JSON='{}'
+  tfvars_write "$TFVARS"
+  tfvars_is_null SGParentWorkflowGroup
+  W_PREV_JSON='{"SGParentWorkflowGroup":"tfc-migration"}'
+  tfvars_write "$TFVARS"
+  tfvars_valid
+  [ "$(tfvars_get .SGParentWorkflowGroup)" = "tfc-migration" ]
+  [ "$(grep -c '^SGParentWorkflowGroup' "$TFVARS")" -eq 1 ]
+}

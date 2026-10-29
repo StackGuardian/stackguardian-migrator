@@ -100,6 +100,12 @@ SGDefaultEnableVCSTriggers = true
 # Re-pull state for every workspace on each apply. Leave false for idempotent runs.
 forceStateRefresh = false
 
+# Migrate into one parent workflow group: every migrated group (tfc-<project>,
+# or a workflowGroup override below) becomes a child of it, e.g.
+# tfc-migration/tfc-platform. Created if missing. null = top-level groups.
+#   SGParentWorkflowGroup = "tfc-migration"
+SGParentWorkflowGroup = null
+
 # Per-project settings, keyed by the TFC project name (as shown in TFC). Every
 # workspace of the project gets them; precedence is
 #   workspaceOverrides > projectOverrides > SGDefault*.

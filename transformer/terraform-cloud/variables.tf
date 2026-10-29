@@ -212,6 +212,16 @@ variable "workspaceOverrides" {
   }
 }
 
+variable "SGParentWorkflowGroup" {
+  default     = null
+  description = "A StackGuardian workflow group to migrate into: every migrated group (tfc-<project> or a workflowGroup override) becomes a child of it, and it is created if missing. null = the groups sit at the top of the org."
+  type        = string
+  validation {
+    condition     = var.SGParentWorkflowGroup == null || can(regex("^[-a-zA-Z0-9_]{1,100}$", var.SGParentWorkflowGroup))
+    error_message = "SGParentWorkflowGroup must be 1-100 characters of letters, digits, - and _ (a StackGuardian workflow group name), or null."
+  }
+}
+
 variable "projectOverrides" {
   default     = {}
   description = "Per-project overrides keyed by the TFC/TFE project name (as shown in TFC, case-sensitive). Applied to every workspace of that project: workspaceOverrides win over these, these win over the SGDefault* values. Same fields as workspaceOverrides plus workflowGroup, which replaces the default StackGuardian workflow group tfc-<project> for the whole project (the payload file keeps its sg-payload.<project>.json name). Keys that match no project are listed in migration-summary.md (unknownProjectOverrides)."
