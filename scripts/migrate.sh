@@ -943,8 +943,10 @@ wf_failed() {
 
 # Regex for the API's rejection of a Terraform version above SG's managed
 # ceiling. SG bundles managed runtimes only up to the last MPL-licensed (FOSS)
-# Terraform release; newer versions are BSL and are not shipped.
-TF_CEILING_RE='Failed to create ([^:]+): 400: .*above the highest managed version \(([0-9.]+)\)'
+# Terraform release; newer versions are BSL and are not shipped. Matches the
+# create and the update (PATCH of a re-import) path; BASH_REMATCH[2] is the
+# workflow, [3] the ceiling.
+TF_CEILING_RE='Failed to (create|update) ([^:]+): 400: .*above the highest managed version \(([0-9.]+)\)'
 
 # import_bulk <group> <file> <out> — import one payload file: sg-cli for the
 # workflows that have Terraform variables, a direct API POST for the ones
@@ -992,7 +994,8 @@ import_bulk() {
         # Same shape as sg-cli's failure line (parsed by do_import).
         line="Failed to update $name: $(tail -n1 <<<"$err")"
         printf '%s\n' "$line" >>"$out"
-        wf_failed "$grp" "$name" updated "$line"
+        # Above the ceiling: do_import retries it with the fallback version.
+        [[ "$line" =~ $TF_CEILING_RE ]] || wf_failed "$grp" "$name" updated "$line"
       fi
     done < <("$JQ_BIN" -r '.[]' <<<"$upd_names")
     create_file="$(mktemp)"
@@ -1139,8 +1142,8 @@ do_import() {
 
   while IFS= read -r line; do
     if [[ "$line" =~ $TF_CEILING_RE ]]; then
-      fb+=("${BASH_REMATCH[1]}")
-      ceiling="${BASH_REMATCH[2]}"
+      fb+=("${BASH_REMATCH[2]}")
+      ceiling="${BASH_REMATCH[3]}"
     elif [[ "$line" =~ Failed\ to\ (create|update)\ ([^:]+):\ [0-9]+:\ (.*)$ ]]; then
       failed+=("${BASH_REMATCH[2]}")
       explain_api_error "${BASH_REMATCH[3]}"

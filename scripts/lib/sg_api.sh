@@ -444,10 +444,12 @@ sg_secret_exists() {
   printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -e --arg n "$1" '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | .ResourceName] | index($n) != null' >/dev/null
 }
 
-# sg_create_secret <name> <value> [description]
+# sg_create_secret <name> <value> [description] — the API takes the value as
+# ResourceValue (a body with only Value is a 400 "ResourceValue: This field is
+# required"); Value is sent too for older API versions.
 sg_create_secret() {
   local body
   body="$("$(sg_resolve jq sg_ensure_jq)" -nc --arg n "$1" --arg v "$2" --arg d "${3:-Created by stackguardian-migrator (placeholder — set the real value)}" \
-    '{ResourceName:$n, ResourceType:"SECRET", Description:$d, Value:$v}')"
+    '{ResourceName:$n, ResourceType:"SECRET", Description:$d, ResourceValue:$v, Value:$v}')"
   SG_NO_RETRY_RC=22 sg_retry "$RETRIES" "$RETRY_BASE" -- sg_api_post "$(sg_org_url)/secrets/" "$body"
 }
