@@ -1,0 +1,16 @@
+# BSD userland on Linux: Chimera Linux ships FreeBSD-derived core tools (tr,
+# sed, grep, find, ...), the closest Docker gets to macOS. It reproduces the
+# macOS side of GNU/BSD differences (e.g. tr accepting "_-\n" where GNU tr
+# dies). bash here is 5.x; bash 3.2 is the bash32 target's job.
+FROM chimeralinux/chimera@sha256:29102d7e12a1f464707d7aba19ce53e652d277861838ed4129178d0655444b1a
+
+ARG HCL2JSON_VERSION=0.6.7
+
+RUN apk add --no-cache bash jq curl git bats python ca-certificates \
+    && arch="$(uname -m)"; case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac \
+    && curl -fsSL "https://github.com/tmccombs/hcl2json/releases/download/v${HCL2JSON_VERSION}/hcl2json_linux_${arch}" -o /usr/local/bin/hcl2json \
+    && chmod +x /usr/local/bin/hcl2json
+
+ENV SG_CACHE_DIR=/tmp/sg-cache
+WORKDIR /app
+ENTRYPOINT ["/bin/bash"]
