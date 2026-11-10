@@ -79,7 +79,7 @@ make test          # tests/run.sh: portability lint, bash -n, shellcheck, bats u
 make test-docker   # the five Linux images; make test-all = both
 make test-live     # tests/live: real TFC + SG sandbox org via op run (make live-seed first; not in test-all)
 
-# Bulk import (from the export dir, sg-cli fetched per README) — once per project file
+# Bulk import (from the export dir, sg-cli fetched per REFERENCE.md) — once per project file
 export SG_API_TOKEN=<token>
 ./sg-cli workflow create --bulk --workflow-group "<WFGRP_ID>" --org "<ORG>" -- sg-payload.<project>.json
 ```
@@ -93,6 +93,7 @@ export SG_API_TOKEN=<token>
 - Run `tofu fmt` on `.tf` changes (see commit history).
 - Shell code must work under GNU and BSD tools and bash 3.2 (macOS `/bin/bash`): `make test-all` before a release; `tests/lint-portability.sh` encodes the known traps (add a rule + a `tests/unit/fixtures/lint-bad.sh` line when a new one bites). Unit tests for pure helpers go in `tests/unit/*.bats` (`load helpers`, `load_libs`).
 - `export/`, `*.tfvars`, `*.tfstate`, and `.terraform/` are gitignored — they hold generated output and secrets.
+- User-facing docs: `README.md` is the guide (quick start, common tasks, limits), `REFERENCE.md` the detailed behavior (phases, settings and precedence, variables, groups, import behavior, CI, phases by hand). Both are external-facing: write StackGuardian, not SG, in prose (env vars and script names stay), in US English. When a flag or setting changes, update `usage()` in `scripts/migrate.sh`, `terraform.tfvars.example` and the matching REFERENCE.md section; touch the README only when a recipe changes.
 
 ## Adding a new source platform
 
