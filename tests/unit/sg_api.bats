@@ -77,6 +77,39 @@ PRESET='{"terraformDefaults":{"TerraformConfig":{"terraformVersion":"/opt/tf","t
   [ -z "$(sg_integration_type "$ints" nope)" ]
 }
 
+# Fake listall: page 1 carries a cursor, page 2 does not. URLs go to a log.
+_fake_listall() {
+  printf '%s\n' "$1" >>"$BATS_TEST_TMPDIR/urls"
+  case "$1" in
+  *lastevaluatedkey=*) [ -z "${FAIL_PAGE2:-}" ] || return 22
+    printf '%s' '{"msg":[{"ResourceName":"old-prod","Settings":{"kind":"AZURE_OIDC"}}]}' ;;
+  *) printf '%s' '{"msg":[{"ResourceName":"gh","Settings":{"kind":"GITHUB_COM"}},{"ResourceName":"new-dev","Settings":{"kind":"AZURE_OIDC"}}],"lastevaluatedkey":"k1+/="}' ;;
+  esac
+}
+
+@test "sg_list_integrations follows lastevaluatedkey across pages" {
+  SG_BASE_URL=https://sg.test ORG=o
+  sg_api_get() { _fake_listall "$@"; }
+  run sg_list_integrations
+  [ "$status" -eq 0 ]
+  [ "$output" = '[{"name":"gh","type":"GITHUB_COM"},{"name":"new-dev","type":"AZURE_OIDC"},{"name":"old-prod","type":"AZURE_OIDC"}]' ]
+  [ "$(sed -n 2p "$BATS_TEST_TMPDIR/urls")" = "https://sg.test/api/v1/orgs/o/integrations/listall/?limit=100&lastevaluatedkey=k1%2B%2F%3D" ]
+  [ "$(sg_integration_type "$output" old-prod)" = "AZURE_OIDC" ]
+}
+
+@test "sg_list_integrations fails when a later page fails" {
+  SG_BASE_URL=https://sg.test ORG=o FAIL_PAGE2=1
+  sg_api_get() { _fake_listall "$@"; }
+  run sg_list_integrations
+  [ "$status" -ne 0 ]
+}
+
+@test "sg_list_integrations: an empty (204) answer is []" {
+  SG_BASE_URL=https://sg.test ORG=o
+  sg_api_get() { :; }
+  [ "$(sg_list_integrations)" = '[]' ]
+}
+
 @test "_sg_wf_body drops the CLI-only keys" {
   [ "$(_sg_wf_body '{"ResourceName":"w","CLIConfiguration":{"a":1},"VCSTriggers":{}}')" = '{"ResourceName":"w"}' ]
 }

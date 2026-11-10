@@ -379,10 +379,22 @@ sg_preset_runner_provided() {
 
 # sg_list_integrations — [{name, type}, ...] for the org (fails on error).
 # The connector kind (GITHUB_COM, AWS_RBAC, ...) is Settings.kind in the API.
+# Follows lastevaluatedkey across pages: the API pages at 50 by default, newest
+# modified first, so a single call misses the oldest connectors of a large org.
+# Unlike _sg_listall, a failed page fails the whole list.
 sg_list_integrations() {
-  local body
-  body="$(sg_api_get "$(sg_org_url)/integrations/listall/")" || return $?
-  printf '%s' "$body" | "$(sg_resolve jq sg_ensure_jq)" -c '[(if (.msg | type) == "array" then .msg elif (.data | type) == "array" then .data elif type == "array" then . else [] end)[] | {name: (.ResourceName // .Id // ""), type: (.Settings.kind // .kind // .ResourceType // "")}] | map(select(.name != ""))'
+  local jqb body page acc='[]' key=""
+  jqb="$(sg_resolve jq sg_ensure_jq)"
+  while :; do
+    body="$(sg_api_get "$(sg_org_url)/integrations/listall/?limit=100${key:+&lastevaluatedkey=$key}")" || return $?
+    # -s: a 204 has an empty body, which must yield [] rather than nothing.
+    page="$(printf '%s' "$body" | "$jqb" -sc '(.[0] // {}) as $b | [(if ($b | type) == "array" then $b elif ($b.msg | type) == "array" then $b.msg elif ($b.data | type) == "array" then $b.data else [] end)[] | {name: (.ResourceName // .Id // ""), type: (.Settings.kind // .kind // .ResourceType // "")}] | map(select(.name != ""))')" || return 1
+    acc="$("$jqb" -nc --argjson a "$acc" --argjson b "$page" '$a + $b')" || return 1
+    # -j: no trailing newline, which @uri would otherwise encode into the cursor.
+    key="$(printf '%s' "$body" | "$jqb" -sj '(.[0] // {}) | if type == "object" and (.lastevaluatedkey | type) == "string" then .lastevaluatedkey | @uri else empty end')" || return 1
+    [ -n "$key" ] || break
+  done
+  printf '%s' "$acc"
 }
 
 # sg_vcs_kind_of <connector-type> — the sourceConfigDestKind a VCS connector

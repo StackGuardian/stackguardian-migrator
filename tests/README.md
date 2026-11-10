@@ -33,7 +33,7 @@ tools:    jq jq-1.7, hcl2json cached, bats 1.14.0, shellcheck 0.11.0
 - `unit/names.bats` covers secret names, project slugs, the Terraform version ceiling, duration and column helpers, and UI links.
 - `unit/scope.bats` covers `ws_selected` and `project_selected`, and checks that the bash globs and the jq globs (`WS_SCOPE_JQ`) select the same workspaces.
 - `unit/tfvars.bats` covers reading (`false`, explicit `null`, the run overlay), the HCL string and map writers, the wizard's file and `init --upgrade`.
-- `unit/sg_api.bats` covers the variable merge modes, the execution-preset fill and descriptions, connector lookups, and the API error hints.
+- `unit/sg_api.bats` covers the variable merge modes, the execution-preset fill and descriptions, connector lookups and connector listall paging, and the API error hints.
 - `unit/state_tools.bats` covers the run state (phase hashes, import records, replaced workflows), `sg_sha`, `sg_retry` and `sg_tf_bin`.
 
 To confirm the suite does its job, run it against the code before the fixes in this change. The old `secret_name_for` fails on `gnu` and `bash32` with the customer's error (`tr: range-endpoints of '_-\012' are in reverse collating sequence order`), and the lint flags it on every target. The old `_tfvars_str` fails on `bash32` and natively on macOS.
