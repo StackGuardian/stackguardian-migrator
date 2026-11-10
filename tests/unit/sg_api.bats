@@ -110,6 +110,49 @@ _fake_listall() {
   [ "$(sg_list_integrations)" = '[]' ]
 }
 
+# Fake listall that answers every request with the same cursor.
+_fake_listall_stuck() {
+  printf '%s\n' "$1" >>"$BATS_TEST_TMPDIR/urls"
+  printf '%s' '{"msg":[{"ResourceName":"a"}],"lastevaluatedkey":"same"}'
+}
+
+@test "sg_list_integrations fails on a repeated cursor instead of looping" {
+  SG_BASE_URL=https://sg.test ORG=o
+  sg_api_get() { _fake_listall_stuck "$@"; }
+  run sg_list_integrations
+  [ "$status" -ne 0 ]
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/urls" | tr -d ' ')" = 2 ]
+}
+
+@test "sg_list_workflows follows lastevaluatedkey, cursor encoded without a newline" {
+  SG_BASE_URL=https://sg.test ORG=o
+  sg_api_get() { _fake_listall "$@"; }
+  run sg_list_workflows grp
+  [ "$status" -eq 0 ]
+  [ "$output" = '["gh","new-dev","old-prod"]' ]
+  [ "$(sed -n 2p "$BATS_TEST_TMPDIR/urls")" = "https://sg.test/api/v1/orgs/o/wfgrps/grp/wfs/listall/?limit=100&lastevaluatedkey=k1%2B%2F%3D" ]
+}
+
+@test "sg_list_workflows stops on a repeated cursor and keeps what it read" {
+  SG_BASE_URL=https://sg.test ORG=o
+  sg_api_get() { _fake_listall_stuck "$@"; }
+  run sg_list_workflows grp
+  [ "$status" -eq 0 ]
+  [ "$output" = '["a","a"]' ]
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/urls" | tr -d ' ')" = 2 ]
+}
+
+@test "paged lists stop at SG_LIST_MAX_PAGES" {
+  SG_BASE_URL=https://sg.test ORG=o SG_LIST_MAX_PAGES=3
+  sg_api_get() {
+    printf '%s\n' "$1" >>"$BATS_TEST_TMPDIR/urls"
+    printf '{"msg":[{"ResourceName":"a"}],"lastevaluatedkey":"k%s"}' "$(wc -l <"$BATS_TEST_TMPDIR/urls" | tr -d ' ')"
+  }
+  run sg_list_workflows grp
+  [ "$status" -eq 0 ]
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/urls" | tr -d ' ')" = 3 ]
+}
+
 @test "_sg_wf_body drops the CLI-only keys" {
   [ "$(_sg_wf_body '{"ResourceName":"w","CLIConfiguration":{"a":1},"VCSTriggers":{}}')" = '{"ResourceName":"w"}' ]
 }

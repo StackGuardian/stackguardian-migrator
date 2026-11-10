@@ -118,7 +118,7 @@ sg_workflow_exists() { [ "$(sg_http_code GET "$(wf_url "$1" "$2")")" = "200" ]; 
 # Tolerates the response shapes seen so far (msg / data / data.Workflows /
 # bare array). The expression is spliced into the jq program.
 _sg_listall() {
-  local path="$1" expr="$2" key="" body page acc='[]' jqb
+  local path="$1" expr="$2" key="" prev pages=0 body page acc='[]' jqb
   jqb="$(sg_resolve jq sg_ensure_jq)"
   while :; do
     body="$(sg_api_get "$(sg_org_url)/${path}?limit=100${key:+&lastevaluatedkey=$key}" 2>/dev/null)" || break
@@ -127,8 +127,14 @@ _sg_listall() {
     page="$(printf '%s' "$body" | "$jqb" -sc '(.[0] // {}) as $b | [(if ($b | type) == "array" then $b elif ($b.msg | type) == "array" then $b.msg elif ($b.data | type) == "array" then $b.data elif ($b.data.Workflows? | type) == "array" then $b.data.Workflows else [] end)[] | '"$expr"' | select(. != null and . != "")]' 2>/dev/null)" || page='[]'
     [ -n "$page" ] || page='[]'
     acc="$("$jqb" -nc --argjson a "$acc" --argjson b "$page" '$a + $b' 2>/dev/null)" || acc="$page"
-    key="$(printf '%s' "$body" | "$jqb" -sr '(.[0] // {}) | if (.lastevaluatedkey | type) == "string" then .lastevaluatedkey else empty end' 2>/dev/null | "$jqb" -sRr @uri)"
+    prev="$key"
+    # -j and @uri in one jq: piping the raw cursor into a second jq encoded its
+    # trailing newline into the cursor (%0A).
+    key="$(printf '%s' "$body" | "$jqb" -sj '(.[0] // {}) | if type == "object" and (.lastevaluatedkey | type) == "string" then .lastevaluatedkey | @uri else empty end' 2>/dev/null)"
     [ -n "$key" ] || break
+    # A cursor that repeats, or pages without end, must not loop forever.
+    pages=$((pages + 1))
+    { [ "$key" != "$prev" ] && [ "$pages" -lt "${SG_LIST_MAX_PAGES:-500}" ]; } || break
   done
   printf '%s' "$acc"
 }
@@ -393,16 +399,23 @@ sg_preset_runner_provided() {
 # modified first, so a single call misses the oldest connectors of a large org.
 # Unlike _sg_listall, a failed page fails the whole list.
 sg_list_integrations() {
-  local jqb body page acc='[]' key=""
+  local jqb body page acc='[]' key="" prev pages=0
   jqb="$(sg_resolve jq sg_ensure_jq)"
   while :; do
     body="$(sg_api_get "$(sg_org_url)/integrations/listall/?limit=100${key:+&lastevaluatedkey=$key}")" || return $?
     # -s: a 204 has an empty body, which must yield [] rather than nothing.
     page="$(printf '%s' "$body" | "$jqb" -sc '(.[0] // {}) as $b | [(if ($b | type) == "array" then $b elif ($b.msg | type) == "array" then $b.msg elif ($b.data | type) == "array" then $b.data else [] end)[] | {name: (.ResourceName // .Id // ""), type: (.Settings.kind // .kind // .ResourceType // "")}] | map(select(.name != ""))')" || return 1
     acc="$("$jqb" -nc --argjson a "$acc" --argjson b "$page" '$a + $b')" || return 1
+    prev="$key"
     # -j: no trailing newline, which @uri would otherwise encode into the cursor.
     key="$(printf '%s' "$body" | "$jqb" -sj '(.[0] // {}) | if type == "object" and (.lastevaluatedkey | type) == "string" then .lastevaluatedkey | @uri else empty end')" || return 1
     [ -n "$key" ] || break
+    # A cursor that repeats, or pages without end, must not loop forever.
+    pages=$((pages + 1))
+    if [ "$key" = "$prev" ] || [ "$pages" -ge "${SG_LIST_MAX_PAGES:-500}" ]; then
+      sg_err "  connector list did not end (the API repeated a page cursor, or more than ${SG_LIST_MAX_PAGES:-500} pages)"
+      return 1
+    fi
   done
   printf '%s' "$acc"
 }
