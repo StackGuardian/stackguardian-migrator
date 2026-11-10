@@ -1,0 +1,16 @@
+# RHEL 9 (Red Hat's freely redistributable UBI image): a native run on a RHEL
+# box or self-hosted CI runner. GNU coreutils 8.32, bash 5.1, jq 1.6 from the
+# RHEL repos; hcl2json comes from the pinned download (sg_ensure_hcl2json,
+# needs network at test time), as it would for a customer.
+FROM registry.access.redhat.com/ubi9/ubi@sha256:5f08e80aa970ae77712e75e5e857ac0b396abc900823c4d041c1150a9538a13f
+
+ARG BATS_VERSION=1.11.1
+RUN dnf install -y -q jq git python3 \
+    && dnf clean all \
+    && curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C /tmp \
+    && "/tmp/bats-core-${BATS_VERSION}/install.sh" /usr/local \
+    && rm -rf "/tmp/bats-core-${BATS_VERSION}"
+
+ENV SG_CACHE_DIR=/tmp/sg-cache
+WORKDIR /app
+ENTRYPOINT ["/bin/bash"]

@@ -1,0 +1,9 @@
+.git
+.sg
+export
+out
+**/.terraform
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
